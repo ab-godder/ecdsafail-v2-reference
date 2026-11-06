@@ -1,6 +1,7 @@
-"""Offset-residue checks that the gate's pinned component list does not reach:
-every value at gate level for every odd prime below 130, including the
-complement of the offset residue of 0, and boundary inputs at secp256k1."""
+"""Checks that the gate's pinned component list does not reach, on the offset
+residues and on the integer square. Each runs on every value at gate level for
+every odd prime below 130, including the complement of the offset residue of 0
+and every n-bit y, and on boundary inputs at secp256k1."""
 import json
 import random
 import sys
@@ -41,11 +42,27 @@ def cases(mod, values, operands):
     return out
 
 
+def square_case(mod, ys):
+    """x + g*y^2 through the square, one modular add and the reverse pass."""
+    q, n, k = mod.q, mod.n, mod.square_pool_size()
+
+    def build(C):
+        y, x, g, z, pool = C.alloc(n), C.alloc(n), C.alloc(1), C.alloc(n), C.alloc(k)
+        square = C.record_shape(lambda a, b, p: mod.square_into(C, a, b, p), [n, n, k])
+        C.apply(square, [y, z, pool])
+        mod.modadd(C, z, x, ctrl=g[0])
+        C.apply(square, [y, z, pool], inverse=True)
+        return [y, x, g], [y, x, g]
+    inputs = [(y, x, g) for y in ys for x, g in ((0, 1), (1, 1), (q - 1, 1), (1, 0))]
+    return run_case(build, inputs, lambda y, x, g: (y, (x + g * y * y) % q, g))
+
+
 def main():
     out, primes = {}, [p for p in range(3, 130, 2) if all(p % d for d in range(3, int(p**0.5) + 1, 2))]
     for q in primes:
         for name, r in cases(Mod(q), range(q), range(q + 1)).items():
             out[f"q={q}:{name}"] = r
+        out[f"q={q}:square"] = square_case(Mod(q), range(1 << q.bit_length()))
     q = 2**256 - 2**32 - 977
     f, c = 2**256 - q, Mod(q).offset()
     rng = random.Random(7)
@@ -53,6 +70,8 @@ def main():
     edge = [e % q for e in edge] + [rng.randrange(q) for _ in range(30)]
     for name, r in cases(Mod(q), edge, edge + [q]).items():
         out[f"secp256k1:{name}"] = r
+    ys = [0, 1, 2, q - 1, q - 2, 2**256 - 1, 2**255, 2**255 - 1, 2**128, 2**128 - 1, 2**128 + 1, f, q - f, 2**224, 2**224 - 1]
+    out["secp256k1:square"] = square_case(Mod(q), ys + [rng.randrange(2**256) for _ in range(40)])
     fails = {k: v for k, v in out.items() if v["failures"]}
     print(json.dumps({"cases": len(out), "lanes": sum(v["lanes"] for v in out.values()), "failing": fails}))
     sys.exit(1 if fails else 0)
