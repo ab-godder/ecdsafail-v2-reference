@@ -27,7 +27,7 @@ The circuit implements |c>|R>|0> -> |c>|R + c*A>|0> for a fixed public point A o
 - `I2.toy` runs `scripts/check.py` on 36 toy instances of 4 to 10 bits, two addends on each of 18 curves. It simulates every point with c = 0 and c = 1 at gate level and requires all scratch back at zero. The gate lists the 36 (curve, addend) pairs itself and requires each exactly once, with 2 x (curve order) lanes. It also loads the flat toy file `scripts/emit.py` wrote, `toy127_circuit.json`, and simulates it the same way at the addend the gate asked for.
 - `I2.toy-hier` runs the same check on the hierarchical emission. `check.py` parses the JSON text with `qec/flatten.py` and expands every call through its wire map and inverse flag, as the benchmark would. On each toy instance it also compares that expansion with the text `flatten.operations_json` writes. It then simulates the hierarchical toy file `scripts/emit.py` wrote, `toy127_circuit.hier.json`. The upload is hierarchical, so a broken call map would pass `I2.toy` and still upload a wrong circuit.
 - `I2.components` runs `scripts/component_check.py`. It checks the 256-bit adders, doubler, negation and multiplier on boundary inputs near q and 2^256 that random points almost never reach.
-- `I2.mutation` runs `scripts/mutation_control.py`. It confirms that the checker still rejects mutated circuits. At its fixed seed the reference catches 163 of 200 CCX-to-CX demotions, and the rest are equivalent circuits. The check fails below 163.
+- `I2.mutation` runs `scripts/mutation_control.py`. It confirms that the checker still rejects mutated circuits. At its fixed seed the reference catches 163 of 200 CCX-to-CX demotions, and the rest are correct on the whole promise domain. The check fails below 163.
 - `I2.secp` simulates the 256-bit hierarchical upload, expanded the same way as `I2.toy-hier`. Each addend runs on infinity, A, -A, -2A, 2A, 3A and random R, with c = 0 and c = 1. Quick mode runs G and one random addend with 8 random R. Full mode runs every built addend with 120 random R. It also requires that the JSON it simulated for G is the bytes `scripts/emit.py` writes.
 - `I2.secp-flat` runs only in full mode. It checks the flat 256-bit circuit at A = G on the same points with 120 random R, and requires all 252 lanes.
 
@@ -55,15 +55,15 @@ Each checker must reach the coverage pinned in `COVERAGE` at the top of `scripts
 
 ## Where the CCX are
 
-At A = G the circuit has 7,209,419 CCX.
+At A = G the circuit has 4,145,938 CCX.
 
 | Part | CCX | Share |
 |---|---|---|
-| Two dialog multipliers, 3,140,864 each | 6,281,728 | 87.1% |
-| Lambda-squared subtract | 910,080 | 12.6% |
-| Flags, exception loads, constant adds | 17,611 | 0.2% |
+| Two dialog multipliers, 1,957,868 each | 3,915,736 | 94.4% |
+| Lambda-squared subtract | 212,591 | 5.1% |
+| Flags, exception loads, constant adds | 17,611 | 0.4% |
 
-The multipliers and the lambda-squared subtract hold 99.8% of the CCX, and none of them reads A. Spend your effort there. That work also carries over to a future windowed kernel that takes the addend as a quantum input, because that kernel needs the same multiplier and subtract. Constant-adder tricks do not carry over, since a windowed kernel has no classical constant to exploit. They also act on the 0.2% that depends on A.
+The multipliers and the lambda-squared subtract hold 99.6% of the CCX, and none of them reads A. Spend your effort there. That work also carries over to a future windowed kernel that takes the addend as a quantum input, because that kernel needs the same multiplier and subtract. Constant-adder tricks do not carry over, since a windowed kernel has no classical constant to exploit. They also act on the 0.2% that depends on A.
 
 ## Report cost over a sample of addends
 

@@ -41,11 +41,12 @@ def _cx(C, ctrl, src, dst):
 
 
 def add(C, a, b, cout=None, ctrl=None, cin=None):
-    """b += ctrl*a + cin mod 2^w (CDKM). cout ^= ctrl*carry out. cin is a wire
-    restored on return, and with ctrl it must imply ctrl."""
+    """b += ctrl*a mod 2^w (CDKM), plus cin when ctrl is None. cout ^= ctrl*carry
+    out. cin is a wire restored on return."""
     w = len(a)
     assert len(b) == w
     assert ctrl is None or ctrl not in (*a, *b, cout)
+    assert ctrl is None or cin is None
     if w == 0:
         return
     own_cin = cin is None
@@ -163,12 +164,13 @@ def _uncarry(C, reg, value, cs, i, ctrl=None):
 
 
 def add_const(C, reg, value, ctrl=None, cout=None, cin=None):
-    """reg += ctrl*value + cin mod 2^w, cout ^= ctrl*carry out. The carry chain
-    reads the constant's bits, so 0 bits below the first 1 cost nothing. cin is
-    a wire restored on return, and with ctrl it must imply ctrl."""
+    """reg += ctrl*value mod 2^w, plus cin when ctrl is None, cout ^= ctrl*carry
+    out. The carry chain reads the constant's bits, so 0 bits below the first 1
+    cost nothing. cin is a wire restored on return."""
     w = len(reg)
     value %= 1 << w
     assert ctrl is None or ctrl not in (*reg, cout)
+    assert ctrl is None or cin is None
     cs = _carries(C, reg, value, ctrl, cin)
     if cout is not None:
         _carry_into(C, reg[-1], value >> (w - 1) & 1, cs[-1], cout, ctrl)
@@ -326,30 +328,24 @@ class Mod:
         add become a top bit and a carry out, with no comparison against q."""
         return ((1 << self.n) - self.q - 1) >> 1
 
-    def offset_add(self, C, a, b, ctrl=None):
-        """b = (b + ctrl*a) mod q on offset residues. b + a + 1 carries out of n
-        bits exactly when the residues sum to at least q, because 2c + 1 = 2^n - q."""
-        def flip(w):
-            if ctrl is None:
-                C.x(w)
-            else:
-                C.cx(ctrl, w)
-
+    def offset_add(self, C, a, b):
+        """b = (b + a) mod q on offset residues. b + a + 1 carries out of n bits
+        exactly when the residues sum to at least q, because 2c + 1 = 2^n - q."""
         (t, cin) = C.alloc(2)
-        flip(cin)
-        add(C, a, b, t, ctrl, cin)
-        flip(cin)
+        C.x(cin)
+        add(C, a, b, t, cin=cin)
+        C.x(cin)
         # t = 1 leaves the plain residue, which needs +c. t = 0 needs -(c + 1),
         # which is the complement of (~b + c + 1). Both run on one carry chain.
-        flip(t)
+        C.x(t)
         for w in b:
             C.cx(t, w)
-        add_const(C, b, self.offset(), ctrl, cin=t)
+        add_const(C, b, self.offset(), cin=t)
         for w in b:
             C.cx(t, w)
-        flip(t)
+        C.x(t)
         # The residue wrapped exactly when the result is below a; the offsets cancel.
-        gt_into(C, a, b, t, ctrl)
+        gt_into(C, a, b, t)
         C.free([t, cin])
 
     def offset_dbl(self, C, s):
