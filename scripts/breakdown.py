@@ -23,14 +23,11 @@ n, mod = gen.n, gen.mod
 out = {}
 
 
-def euclid_only(C, X, Y):
+def euclid_only(C, U, V):
     M = DialogMultiplier(C, mod)
-    from qec.arith import load_const
-    U = C.alloc(n)
-    load_const(C, U, mod.q)
     G = C.alloc(2 * M.iters)
     for i in range(M.iters):
-        C.apply(M._euclid_step(M.widths[i]), [U, X, G[2 * i:2 * i + 2]])
+        C.apply(M._euclid_step(M.widths[i]), [U, V, G[2 * i:2 * i + 2]])
 
 
 def bezout_only(C, Y, S, G):
@@ -44,7 +41,7 @@ def mulsub(C, g, X, Y):
     gen._mulsub(g[0], Y, X)
 
 
-out["euclid_pass"] = count(euclid_only, [n, n])
+out["euclid_pass"] = count(euclid_only, [n + 2, n + 2])
 out["bezout_pass"] = count(bezout_only, [n, n, 2 * 512])
 out["dialog_multiplier_M"] = count(lambda C, X, Y: DialogMultiplier(C, mod).apply(X, Y), [n, n])
 out["lambda_square_subtract"] = count(mulsub, [1, n, n])

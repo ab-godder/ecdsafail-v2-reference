@@ -1,7 +1,7 @@
 """Exact, complete, controlled fixed-addend point addition:
 |c>|R>|0> -> |c>|R + c*A>|0> for every R in E(F_q) encoded as little-endian
 affine (x, y) with infinity = (0, 0)."""
-from .arith import Mod, cswap, gt_into, load_const, sub
+from .arith import Mod, add, cswap, gt_into, load_const
 from .builder import Circuit
 from .curve import Curve
 from .model import iteration_bound, width_schedule
@@ -15,25 +15,35 @@ class DialogMultiplier:
         q, n = mod.q, mod.n
         self.iters = iteration_bound(q)
         self.widths = width_schedule(q, self.iters)
-        self.zbit = next(j for j in range(1, n) if q >> j & 1)
         self._euclid_steps = {}
         self._bezout_step = None
         self.block = None
 
     def _euclid_step(self, w):
+        """One Euclid step on (U, V) with V = 2v + u. b0 = v mod 2 is bit 1 of
+        V - u. (V - u)/2 or (V + u)/2 is one uncontrolled add between two
+        b0-controlled complements, since V - u = ~(~V + u) and V >= u. After it
+        V holds the old v when b0 = 1, so the swap then puts (v, u) into
+        (U, V), which is (u', V') for the swapped step."""
         if w not in self._euclid_steps:
             C = self.C
+            W = w + 2
 
             def step(U, V, g):
                 g0, g1 = g
-                C.cx(V[0], g0)
+                C.cx(V[1], g0)
+                C.cx(U[1], g0)
+                for b in V[:W]:
+                    C.cx(g0, b)
+                add(C, U[:W], V[:W])
+                for b in V[:W]:
+                    C.cx(g0, b)
+                V[:] = V[1:] + V[:1]
                 gt_into(C, U[:w], V[:w], g1, ctrl=g0)
                 cswap(C, g1, U[:w], V[:w])
-                sub(C, U[:w], V[:w], ctrl=g0)
-                V[:] = V[1:] + V[:1]
 
             n = self.mod.n
-            self._euclid_steps[w] = C.record_shape(step, [n, n, 2])
+            self._euclid_steps[w] = C.record_shape(step, [n + 2, n + 2, 2])
         return self._euclid_steps[w]
 
     def _bezout(self):
@@ -49,25 +59,47 @@ class DialogMultiplier:
             self._bezout_step = C.record_shape(step, [2, n, n])
         return self._bezout_step
 
-    def _body(self, Xr, Yr):
-        C, q, n, T = self.C, self.mod.q, self.mod.n, self.iters
-        U = C.alloc(n)
+    def _is_zero_into(self, bits, t):
+        C = self.C
+        (one,) = C.alloc(1)
+        C.x(one)
+        eq_const_into(C, one, bits, 0, t)
+        C.x(one)
+        C.free([one])
+
+    def _init_uv(self, U, V, z):
+        """(U, V) = (q, 2x + q), or (1, 1) when x = 0 so that every Euclid step
+        idles on registers that fit the shrinking widths."""
+        C, q = self.C, self.mod.q
         load_const(C, U, q)
+        load_const(C, U, q ^ 1, ctrl=z[0])
+        V[:] = V[-1:] + V[:-1]
+        add(C, U, V)
+
+    def _body(self, Xr, Yr):
+        C, n, T = self.C, self.mod.n, self.iters
+        (z,) = C.alloc(1)
+        self._is_zero_into(Xr, z)
+        U = C.alloc(n + 2)
+        ext = C.alloc(2)
+        V = Xr + ext
+        I = C.run(self._init_uv, [U, V, [z]])
         G = C.alloc(2 * T)
 
         def euclid(U, V, G):
             for i in range(T):
                 C.apply(self._euclid_step(self.widths[i]), [U, V, G[2 * i:2 * i + 2]])
 
-        E = C.run(euclid, [U, Xr, G])
+        E = C.run(euclid, [U, V, G])
         S = C.alloc(n)
         bz = self._bezout()
         for i in reversed(range(T)):
             C.apply(bz, [G[2 * i:2 * i + 2], Yr, S])
-        cswap(C, U[self.zbit], Yr, S)
-        C.apply(E, [U, Xr, G], inverse=True)
-        load_const(C, U, q)
-        C.free(U + G + Yr)
+        cswap(C, z, Yr, S)
+        C.apply(E, [U, V, G], inverse=True)
+        C.apply(I, [U, V, [z]], inverse=True)
+        self._is_zero_into(Xr, z)
+        C.free(U + G + Yr + ext + [z])
         Yr[:] = S
 
     def apply(self, Xr, Yr, inverse=False):
