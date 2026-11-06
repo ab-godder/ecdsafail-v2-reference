@@ -47,14 +47,26 @@ class DialogMultiplier:
         return self._euclid_steps[w]
 
     def _bezout(self):
+        """One inverse Euclid step on (R, W) = y*(u, V) mod q, in offset residues.
+        These run from (y, y), since Euclid ends on (u, V) = (1, 1). They end on
+        (0, 2xy), or stay at (y, y) when x = 0."""
         if self._bezout_step is None:
             C, mod, n = self.C, self.mod, self.mod.n
 
-            def step(g, R, S):
+            def step(g, R, W):
                 g0, g1 = g
-                mod.offset_dbl(C, S)
-                mod.offset_add(C, R, S, ctrl=g0)
-                cswap(C, g1, R, S)
+                cswap(C, g1, R, W)
+                mod.offset_dbl(C, W)
+                # g0 = 0 inverts V' = (V + u)/2, so W = 2W - R. Complementing an
+                # offset residue negates it, and the complement of 0's residue
+                # still works as an addend.
+                C.x(g0)
+                for r in R:
+                    C.cx(g0, r)
+                mod.offset_add(C, R, W)
+                for r in R:
+                    C.cx(g0, r)
+                C.x(g0)
 
             self._bezout_step = C.record_shape(step, [2, n, n])
         return self._bezout_step
@@ -91,21 +103,28 @@ class DialogMultiplier:
                 C.apply(self._euclid_step(self.widths[i]), [U, V, G[2 * i:2 * i + 2]])
 
         E = C.run(euclid, [U, V, G])
-        S = C.alloc(n)
-        offset = self.mod.offset()
+        W = C.alloc(n)
+        mod, offset = self.mod, self.mod.offset()
         add_const(C, Yr, offset)
-        load_const(C, S, offset)
+        for y, w in zip(Yr, W):
+            C.cx(y, w)
         bz = self._bezout()
         for i in reversed(range(T)):
-            C.apply(bz, [G[2 * i:2 * i + 2], Yr, S])
-        cswap(C, z, Yr, S)
-        load_const(C, Yr, offset)
-        add_const(C, S, -offset)
+            C.apply(bz, [G[2 * i:2 * i + 2], Yr, W])
+        # (R + W)/2 is xy for x != 0 and y for x = 0.
+        mod.offset_add(C, Yr, W)
+        C.apply(C.record_shape(lambda s: mod.offset_dbl(C, s), [n]), [W], inverse=True)
+        for y, w in zip(Yr, W):
+            C.ccx(z, w, y)
+        C.x(z)
+        load_const(C, Yr, offset, ctrl=z)
+        C.x(z)
+        add_const(C, W, -offset)
         C.apply(E, [U, V, G], inverse=True)
         C.apply(I, [U, V, [z]], inverse=True)
         self._is_zero_into(Xr, z)
         C.free(U + G + Yr + ext + [z])
-        Yr[:] = S
+        Yr[:] = W
 
     def apply(self, Xr, Yr, inverse=False):
         if self.block is None:

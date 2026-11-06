@@ -26,26 +26,22 @@ def euclid(q, x, iters):
 
 
 def bezout(q, y, dialog):
-    r, s = y, 0
+    """Inverse Euclid on (r, w) = y*(u, V) with V = 2v + u, from (u, V) = (1, 1)."""
+    r, w = y, y
     for b0, sw in reversed(dialog):
-        s = 2 * s % q
-        if b0:
-            s = (s + r) % q
         if sw:
-            r, s = s, r
-    return r, s
+            r, w = w, r
+        w = (2 * w + (r if b0 else -r)) % q
+    return r, w
 
 
 def inplace_mul(q, x, y, iters=None):
     iters = iters or iteration_bound(q)
     u, v, dialog = euclid(q, x, iters)
     assert v == 0, "euclid did not terminate within the bound"
-    r, s = bezout(q, y, dialog)
-    if u != 1:
-        assert x == 0 and u == q
-        r, s = s, r
-    assert r == 0
-    return s
+    r, w = bezout(q, y, dialog)
+    assert x == 0 or r == 0
+    return (r + w) * (q + 1) // 2 % q
 
 
 def width_schedule(q, iters):
