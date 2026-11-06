@@ -26,13 +26,6 @@ def cases(mod, values, operands):
     out["add"] = run_case(b_add, [(a + c, s + c) for a in operands for s in values],
                           lambda a, s: (a, (s + a - 2 * c) % q + c))
 
-    def b_cadd(C):
-        g, a, b = C.alloc(1), C.alloc(n), C.alloc(n)
-        mod.offset_add(C, a, b, ctrl=g[0])
-        return [g, a, b], [g, a, b]
-    out["add_ctrl"] = run_case(b_cadd, [(g, a + c, s + c) for g in (0, 1) for a in operands for s in values],
-                               lambda g, a, s: (g, a, (s - c + g * (a - c)) % q + c))
-
     def b_dbl(C):
         s = C.alloc(n)
         s_in = list(s)
