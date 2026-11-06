@@ -30,14 +30,17 @@ def _cx(C, ctrl, src, dst):
         C.ccx(ctrl, src, dst)
 
 
-def add(C, a, b, cout=None, ctrl=None):
-    """b += ctrl*a mod 2^w (CDKM). cout ^= ctrl*carry out."""
+def add(C, a, b, cout=None, ctrl=None, cin=None):
+    """b += ctrl*a + cin mod 2^w (CDKM). cout ^= ctrl*carry out. cin is a wire
+    restored on return, and with ctrl it must imply ctrl."""
     w = len(a)
     assert len(b) == w
     assert ctrl is None or ctrl not in (*a, *b, cout)
     if w == 0:
         return
-    (cin,) = C.alloc(1)
+    own_cin = cin is None
+    if own_cin:
+        (cin,) = C.alloc(1)
     carries = [cin] + a[:-1]
     for i in range(w):
         _maj(C, carries[i], b[i], a[i])
@@ -48,7 +51,8 @@ def add(C, a, b, cout=None, ctrl=None):
             _uma(C, carries[i], b[i], a[i])
         else:
             _cuma(C, ctrl, carries[i], b[i], a[i])
-    C.free([cin])
+    if own_cin:
+        C.free([cin])
 
 
 def sub(C, a, b, borrow=None, ctrl=None):
@@ -111,11 +115,11 @@ def _carry_into(C, b, bit, c, t, ctrl=None):
         C.cx(c, t)
 
 
-def _carries(C, reg, value, ctrl=None):
-    """cs[i] is the carry into reg[i] of reg + ctrl*value. Each entry is None
-    when the carry is always 0, reg[i - 1] itself when it equals that bit, or a
-    fresh wire. Release the fresh wires with _uncarry."""
-    cs = [None]
+def _carries(C, reg, value, ctrl=None, cin=None):
+    """cs[i] is the carry into reg[i] of reg + ctrl*value + cin. Each entry is
+    None when the carry is always 0, reg[i - 1] itself when it equals that bit,
+    or a fresh wire. Release the fresh wires with _uncarry."""
+    cs = [cin]
     for i in range(len(reg) - 1):
         bit, c = value >> i & 1, cs[i]
         if c is None and not bit:
@@ -136,13 +140,14 @@ def _uncarry(C, reg, value, cs, i, ctrl=None):
         C.free([cs[i]])
 
 
-def add_const(C, reg, value, ctrl=None, cout=None):
-    """reg += ctrl*value mod 2^w, cout ^= ctrl*carry out. The carry chain reads
-    the constant's bits, so 0 bits below the first 1 cost nothing."""
+def add_const(C, reg, value, ctrl=None, cout=None, cin=None):
+    """reg += ctrl*value + cin mod 2^w, cout ^= ctrl*carry out. The carry chain
+    reads the constant's bits, so 0 bits below the first 1 cost nothing. cin is
+    a wire restored on return, and with ctrl it must imply ctrl."""
     w = len(reg)
     value %= 1 << w
     assert ctrl is None or ctrl not in (*reg, cout)
-    cs = _carries(C, reg, value, ctrl)
+    cs = _carries(C, reg, value, ctrl, cin)
     if cout is not None:
         _carry_into(C, reg[-1], value >> (w - 1) & 1, cs[-1], cout, ctrl)
     for i in reversed(range(w)):
@@ -222,6 +227,54 @@ class Mod:
         runs on s against _wrap() >> 1, and the low bit of the result is the flag."""
         _reduce(C, s, self._wrap() >> 1)
         s[:] = s[-1:] + s[:-1]
+
+    def offset(self):
+        """c = (2^n - q - 1)/2. Offset residues store x in [0, q) as x + c, which
+        centres them in [0, 2^n): the flags of a modular double and a modular
+        add become a top bit and a carry out, with no comparison against q."""
+        return ((1 << self.n) - self.q - 1) >> 1
+
+    def offset_add(self, C, a, b, ctrl=None):
+        """b = (b + ctrl*a) mod q on offset residues. b + a + 1 carries out of n
+        bits exactly when the residues sum to at least q, because 2c + 1 = 2^n - q."""
+        def flip(w):
+            if ctrl is None:
+                C.x(w)
+            else:
+                C.cx(ctrl, w)
+
+        (t, cin) = C.alloc(2)
+        flip(cin)
+        add(C, a, b, t, ctrl, cin)
+        flip(cin)
+        # t = 1 leaves the plain residue, which needs +c. t = 0 needs -(c + 1),
+        # which is the complement of (~b + c + 1). Both run on one carry chain.
+        flip(t)
+        for w in b:
+            C.cx(t, w)
+        add_const(C, b, self.offset(), ctrl, cin=t)
+        for w in b:
+            C.cx(t, w)
+        flip(t)
+        # The residue wrapped exactly when the result is below a; the offsets cancel.
+        gt_into(C, a, b, t, ctrl)
+        C.free([t, cin])
+
+    def offset_dbl(self, C, s):
+        """s = 2s mod q on offset residues. The top bit is the flag [2x >= q], and
+        rotating it in as the low bit leaves s + c under the flag and s - c
+        otherwise, which is one chain on the upper bits and a complement frame."""
+        c = self.offset()
+        s[:] = s[-1:] + s[:-1]
+        t, h = s[0], s[1:]
+        C.x(t)
+        for w in h:
+            C.cx(t, w)
+        add_const(C, h, (c + 1) >> 1)
+        for w in h:
+            C.cx(t, w)
+        if not c & 1:
+            C.x(t)
 
     def cmodadd_const(self, C, ctrl, value, b):
         """b = (b + ctrl*value) mod q."""

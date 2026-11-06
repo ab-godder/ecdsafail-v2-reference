@@ -1,7 +1,7 @@
 """Exact, complete, controlled fixed-addend point addition:
 |c>|R>|0> -> |c>|R + c*A>|0> for every R in E(F_q) encoded as little-endian
 affine (x, y) with infinity = (0, 0)."""
-from .arith import Mod, add, cswap, gt_into, load_const
+from .arith import Mod, add, add_const, cswap, gt_into, load_const
 from .builder import Circuit
 from .curve import Curve
 from .model import iteration_bound, width_schedule
@@ -52,8 +52,8 @@ class DialogMultiplier:
 
             def step(g, R, S):
                 g0, g1 = g
-                mod.moddbl(C, S)
-                mod.modadd(C, R, S, ctrl=g0)
+                mod.offset_dbl(C, S)
+                mod.offset_add(C, R, S, ctrl=g0)
                 cswap(C, g1, R, S)
 
             self._bezout_step = C.record_shape(step, [2, n, n])
@@ -92,10 +92,15 @@ class DialogMultiplier:
 
         E = C.run(euclid, [U, V, G])
         S = C.alloc(n)
+        offset = self.mod.offset()
+        add_const(C, Yr, offset)
+        load_const(C, S, offset)
         bz = self._bezout()
         for i in reversed(range(T)):
             C.apply(bz, [G[2 * i:2 * i + 2], Yr, S])
         cswap(C, z, Yr, S)
+        load_const(C, Yr, offset)
+        add_const(C, S, -offset)
         C.apply(E, [U, V, G], inverse=True)
         C.apply(I, [U, V, [z]], inverse=True)
         self._is_zero_into(Xr, z)
