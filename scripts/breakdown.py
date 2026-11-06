@@ -41,7 +41,7 @@ def mulsub(C, g, X, Y):
 
 
 out["euclid_pass"] = count(euclid_only, [n, n, 1])
-out["bezout_pass"] = count(bezout_only, [n, n, 2 * 512])
+out["bezout_pass"] = count(bezout_only, [n, n, 2 * (2 * n - 1)])
 out["dialog_multiplier_M"] = count(lambda C, X, Y: DialogMultiplier(C, mod).apply(X, Y), [n, n])
 out["lambda_square_subtract"] = count(mulsub, [1, n, n])
 full = gen.build()

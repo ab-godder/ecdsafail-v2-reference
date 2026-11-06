@@ -7,8 +7,11 @@ for the iteration bound and the Bezout identity.
 
 
 def iteration_bound(q):
-    """Proven cap on active Euclid iterations: u*v at least halves per step."""
-    return (q * (q - 1)).bit_length()
+    """Proven cap on active Euclid iterations. bitlen(u) + bitlen(v) starts at
+    2n or less and drops by at least 1 per step, because |v - u|/2 is at most
+    (max(u, v) - 1)/2. It is at least 2 while v != 0, so after 2n - 2 steps
+    (u, v) is (1, 1) or v is 0, and one more step clears v."""
+    return 2 * q.bit_length() - 1
 
 
 def euclid(q, x, iters):
@@ -45,6 +48,7 @@ def inplace_mul(q, x, y, iters=None):
 
 
 def width_schedule(q, iters):
-    """Bits needed for u and v before iteration i while v != 0."""
+    """Bits needed for u and v before iteration i while v != 0: the smaller one
+    takes at least 1 of the 2n - i bits iteration_bound counts."""
     n = q.bit_length()
-    return [min(n, (q * (q - 1) >> i).bit_length()) for i in range(iters)]
+    return [min(n, 2 * n - 1 - i) for i in range(iters)]
