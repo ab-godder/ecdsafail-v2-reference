@@ -44,7 +44,9 @@ T_PER_CCX = 7
 ALLOWED_GATES = {"X", "CX", "CCX", "SWAP"}
 REFERENCE = {"commit": "8ca9b0e", "sample_max_t": 50_465_989, "wires": 2311}
 COVERAGE = {"model_primes": 13, "toy_instances": 36, "toy_lanes": 25_800, "components": 49, "component_lanes": 8_951,
-            "mutation_trials": 200, "mutations_caught_at_least": 163, "secp_special_points": 6}
+            "mutation_trials": 200, "mutations_caught_at_least": 163, "secp_special_points": 6,
+            "offset_cases": 93, "offset_lanes": 154_085, "multiplier_primes": 31, "multiplier_lanes": 311_982,
+            "multiplier_mutations_caught_at_least": 190}
 G_MULTIPLES = tuple(range(1, 9))
 SECP_RANDOM_POINTS = {True: 8, False: 120}
 SECP_WORKERS = min(6, os.cpu_count() or 1)
@@ -182,6 +184,8 @@ class Run:
             "toy": [["check.py", *TOY_ARGS, "--out", w / "toy_exhaustive.json"]],
             "toy-hier": [["check.py", *TOY_ARGS, "--hier", "--out", w / "toy_exhaustive_hier.json"]],
             "components": [["component_check.py"]],
+            "offset": [["offset_check.py"]],
+            "multiplier": [["multiplier_check.py"]],
             "mutation": [["mutation_control.py"]],
             "secp-hier": [["check.py", "--secp", "--hier", "--secp-addend", *map(hex, c), "--secp-random", self.secp_points,
                            "--seed", seed, "--out", w / f"secp256k1_hier_{i}.json"] for i, c in enumerate(chunks)],
@@ -400,6 +404,30 @@ def i2_components(run):
     return Result(FAIL if bad or problems else PASS, note, {"exit": p.rc, "components": len(parts), "lanes": lanes, "failing": bad, "log": p.log})
 
 
+def i2_offset(run):
+    p, = run.procs("offset")
+    rows = json_lines(p.stdout)
+    out = rows[-1] if rows else {}
+    bad = sorted(out.get("failing", {}))
+    problems = [f"exit {p.rc}, see {p.log}"] * bool(p.rc) + coverage("cases", out.get("cases"), "offset_cases") + coverage("lanes", out.get("lanes"), "offset_lanes")
+    note = f"{out.get('cases')} cases, {out.get('lanes')} lanes, every value at odd primes below 130 and secp256k1 boundaries, failing: {bad or 'none'}" + "".join(f"; {m}" for m in problems)
+    return Result(FAIL if bad or problems else PASS, note, {"exit": p.rc, **out, "log": p.log})
+
+
+def i2_multiplier(run):
+    p, = run.procs("multiplier")
+    rows = json_lines(p.stdout)
+    out = rows[-1] if rows else {}
+    bad = sorted(out.get("failing", {}))
+    need = COVERAGE["multiplier_mutations_caught_at_least"]
+    problems = [f"exit {p.rc}, see {p.log}"] * bool(p.rc) + coverage("primes", out.get("primes"), "multiplier_primes") + coverage("lanes", out.get("lanes"), "multiplier_lanes")
+    problems += coverage("trials", out.get("trials"), "mutation_trials")
+    caught = out.get("caught", -1)
+    note = (f"M and M^-1 on every canonical (x, y) at {out.get('primes')} primes, {out.get('lanes')} lanes, failing: {bad or 'none'}; "
+            f"{caught} of {out.get('trials')} demotions caught at q = {out.get('mutation_q')}, at least {need} required") + "".join(f"; {m}" for m in problems)
+    return Result(FAIL if bad or problems or caught < need else PASS, note, {"exit": p.rc, **out, "required": need, "log": p.log})
+
+
 def i2_mutation(run):
     p, = run.procs("mutation")
     rows = json_lines(p.stdout)
@@ -576,6 +604,8 @@ CHECKS = (
     Check("I2.toy", "exactness: exhaustive gate-level check on toy curves and the emitted toy file", i2_toy, ("toy", "emit:toy127")),
     Check("I2.toy-hier", "exactness: same check on the hierarchical upload", i2_toy_hier, ("toy-hier", "emit:toy127.hier")),
     Check("I2.components", "exactness: 256-bit components on boundary inputs", i2_components, ("components",)),
+    Check("I2.offset", "exactness: offset residues and the integer square on every value and on boundary inputs", i2_offset, ("offset",)),
+    Check("I2.multiplier", "exactness: the multiplier on its whole canonical domain, with its own mutation control", i2_multiplier, ("multiplier",)),
     Check("I2.mutation", "exactness: the checker rejects mutated circuits", i2_mutation, ("mutation",)),
     Check("I2.secp", "exactness: 256-bit hierarchical upload on exceptional and random points", i2_secp, ("secp-hier", "emit:secp256k1_G.hier")),
     Check("I2.secp-flat", "exactness: 256-bit flat circuit at G", i2_secp_flat, ("secp-flat",), full_only=True),

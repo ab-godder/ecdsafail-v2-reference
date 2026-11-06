@@ -54,7 +54,7 @@ python3 scripts/accept.py --quick --only I5 I6 --sample 4 --seed 7
 
 Wall time depends on cores and load, because the checkers run in parallel. On 10 cores at load average 6 to 15, quick mode took 17 s and full mode 103 s.
 
-The ids are `I1`, `I2.model`, `I2.toy`, `I2.toy-hier`, `I2.components`, `I2.mutation`, `I2.secp`, `I2.secp-flat`, `I3`, `I5`, `I6`, `I7`, `I7.charge` and `R1`. Each prints a row with `PASS`, `FAIL` or `PENDING` and a one-line note. The last line starts with `gate PASS` or `gate FAIL`. The exit code is 0 only when no check fails. `I7.charge` stays `PENDING` until the benchmark is published, and that is expected.
+The ids are `I1`, `I2.model`, `I2.toy`, `I2.toy-hier`, `I2.components`, `I2.offset`, `I2.multiplier`, `I2.mutation`, `I2.secp`, `I2.secp-flat`, `I3`, `I5`, `I6`, `I7`, `I7.charge` and `R1`. Each prints a row with `PASS`, `FAIL` or `PENDING` and a one-line note. The last line starts with `gate PASS` or `gate FAIL`. The exit code is 0 only when no check fails. `I7.charge` stays `PENDING` until the benchmark is published, and that is expected.
 
 The feature files in `features/` give the exact commands for each user-facing feature. Start from `features/README.md`.
 
@@ -74,7 +74,7 @@ Proof standards:
 - Drive the real path a user runs, `scripts/emit.py` and `scripts/accept.py`. Don't call `qec` functions in a one-off script and report that as the proof.
 - Capture the action and the resulting state. For emission, that is the meta line it printed and the file it wrote. For a check, that is the row and the evidence in `accept.json`.
 - Check the side effects. `R1` in `accept.json` confirms the run changed no file git tracks, in content, type or mode. An emitted file has the byte count and sha256 that `evidence.sh` recorded.
-- A pass of `I2.secp` alone proves little. Random 256-bit points cannot tell an exact circuit from an approximate one. Exactness rests on `I2.toy`, `I2.toy-hier`, `I2.components` and `I2.model`. `I2.secp` catches a wrong gate that runs only at 256 bits, on the addends and points it samples.
+- A pass of `I2.secp` alone proves little. Random 256-bit points cannot tell an exact circuit from an approximate one. Exactness rests on `I2.toy`, `I2.toy-hier`, `I2.components`, `I2.offset`, `I2.multiplier` and `I2.model`. `I2.secp` catches a wrong gate that runs only at 256 bits, on the addends and points it samples.
 - Don't report `I7.charge` as verified. It is pending.
 
 ## Cleanup
