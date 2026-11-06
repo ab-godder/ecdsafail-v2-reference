@@ -1,7 +1,7 @@
 """Exact, complete, controlled fixed-addend point addition:
 |c>|R>|0> -> |c>|R + c*A>|0> for every R in E(F_q) encoded as little-endian
 affine (x, y) with infinity = (0, 0)."""
-from .arith import Mod, add, add_const, cswap, gt_into, load_const
+from .arith import Mod, _maj, add_const, cswap, load_const
 from .builder import Circuit
 from .curve import Curve
 from .model import iteration_bound, width_schedule
@@ -20,35 +20,58 @@ class DialogMultiplier:
         self.block = None
 
     def _euclid_step(self, w):
-        """One Euclid step on (U, V) with V = 2v + u. b0 = v mod 2 is bit 1 of
-        V - u. (V - u)/2 or (V + u)/2 is one uncontrolled add between two
-        b0-controlled complements, since V - u = ~(~V + u) and V >= u. After it
-        V holds the old v when b0 = 1, so the swap then puts (v, u) into
-        (U, V), which is (u', V') for the swapped step."""
+        """One Euclid step on (U, Z, e) with v = Z + e and u odd. b0 = v mod 2 is
+        Z[0] ^ e, and that wire keeps it. When v is odd, Z's upper bits are v's
+        whatever e is, so one carry chain over U[1:w] and ~Z[1:w] gives the swap
+        bit, the difference and the smaller value. |u - v|/2 is the complement of
+        that sum when u <= v, and the sum plus one otherwise, so the + 1 stays
+        pending in e. An even v just shifts, carrying e along."""
         if w not in self._euclid_steps:
             C = self.C
-            W = w + 2
 
-            def step(U, V, g):
-                g0, g1 = g
-                C.cx(V[1], g0)
-                C.cx(U[1], g0)
-                for b in V[:W]:
-                    C.cx(g0, b)
-                add(C, U[:W], V[:W])
-                for b in V[:W]:
-                    C.cx(g0, b)
-                V[:] = V[1:] + V[:1]
-                gt_into(C, U[:w], V[:w], g1, ctrl=g0)
-                cswap(C, g1, U[:w], V[:w])
+            def step(U, Z, E, D):
+                top, g1, e_next = D
+                e, g0 = E[0], Z[0]
+                a, b = U[1:w], Z[1:w]
+                C.cx(e, g0)
+                for x in b:
+                    C.x(x)
+                (cin,) = C.alloc(1)
+                carries = [cin] + a[:-1]
+                for c, x, y in zip(carries, b, a):
+                    _maj(C, c, x, y)
+                if a:
+                    C.ccx(g0, a[-1], g1)
+                for c, x, y in reversed(list(zip(carries, b, a))):
+                    C.ccx(c, x, y)
+                    C.ccx(g0, c, x)
+                    C.cx(y, c)
+                    C.cx(y, x)
+                    # g1 implies g0, so x holds the sum and x ^ c is y ^ ~Z[i].
+                    C.cx(c, x)
+                    C.x(x)
+                    C.ccx(g1, x, y)
+                    C.x(x)
+                    C.cx(c, x)
+                C.free([cin])
+                for x in b:
+                    C.x(x)
+                    C.cx(g1, x)
+                C.x(g0)
+                C.ccx(g0, e, e_next)
+                C.x(g0)
+                C.cx(g1, e_next)
+                Z[:] = Z[1:] + [top]
+                E[:] = [e_next]
+                D[:] = [g0, g1, e]
 
             n = self.mod.n
-            self._euclid_steps[w] = C.record_shape(step, [n + 2, n + 2, 2])
+            self._euclid_steps[w] = C.record_shape(step, [n, n, 1, 3])
         return self._euclid_steps[w]
 
     def _bezout(self):
-        """One inverse Euclid step on (R, W) = y*(u, V) mod q, in offset residues.
-        These run from (y, y), since Euclid ends on (u, V) = (1, 1). They end on
+        """One inverse Euclid step on (R, W) = y*(u, 2v + u) mod q, in offset residues.
+        These run from (y, y), since Euclid ends on (u, v) = (1, 0). They end on
         (0, 2xy), or stay at (y, y) when x = 0."""
         if self._bezout_step is None:
             C, mod, n = self.C, self.mod, self.mod.n
@@ -57,7 +80,7 @@ class DialogMultiplier:
                 g0, g1 = g
                 cswap(C, g1, R, W)
                 mod.offset_dbl(C, W)
-                # g0 = 0 inverts V' = (V + u)/2, so W = 2W - R. Complementing an
+                # g0 = 0 inverts v' = v/2, so W = 2W - R. Complementing an
                 # offset residue negates it, and the complement of 0's residue
                 # still works as an addend.
                 C.x(g0)
@@ -79,30 +102,30 @@ class DialogMultiplier:
         C.x(one)
         C.free([one])
 
-    def _init_uv(self, U, V, z):
-        """(U, V) = (q, 2x + q), or (1, 1) when x = 0 so that every Euclid step
-        idles on registers that fit the shrinking widths."""
+    def _init_u(self, U, z):
+        """U = q, or 1 when x = 0 so that every Euclid step idles on registers
+        that fit the shrinking widths."""
         C, q = self.C, self.mod.q
         load_const(C, U, q)
         load_const(C, U, q ^ 1, ctrl=z[0])
-        V[:] = V[-1:] + V[:-1]
-        add(C, U, V)
 
     def _body(self, Xr, Yr):
         C, n, T = self.C, self.mod.n, self.iters
         (z,) = C.alloc(1)
         self._is_zero_into(Xr, z)
-        U = C.alloc(n + 2)
-        ext = C.alloc(2)
-        V = Xr + ext
-        I = C.run(self._init_uv, [U, V, [z]])
-        G = C.alloc(2 * T)
+        U = C.alloc(n)
+        Z = list(Xr)
+        E = C.alloc(1)
+        I = C.run(self._init_u, [U, [z]])
+        G = C.alloc(3 * T)
 
-        def euclid(U, V, G):
+        def euclid(U, Z, E, G):
             for i in range(T):
-                C.apply(self._euclid_step(self.widths[i]), [U, V, G[2 * i:2 * i + 2]])
+                D = G[3 * i:3 * i + 3]
+                C.apply(self._euclid_step(self.widths[i]), [U, Z, E, D])
+                G[3 * i:3 * i + 3] = D
 
-        E = C.run(euclid, [U, V, G])
+        Euc = C.run(euclid, [U, Z, E, G])
         W = C.alloc(n)
         mod, offset = self.mod, self.mod.offset()
         add_const(C, Yr, offset)
@@ -110,7 +133,7 @@ class DialogMultiplier:
             C.cx(y, w)
         bz = self._bezout()
         for i in reversed(range(T)):
-            C.apply(bz, [G[2 * i:2 * i + 2], Yr, W])
+            C.apply(bz, [G[3 * i:3 * i + 2], Yr, W])
         # (R + W)/2 is xy for x != 0 and y for x = 0.
         mod.offset_add(C, Yr, W)
         C.apply(C.record_shape(lambda s: mod.offset_dbl(C, s), [n]), [W], inverse=True)
@@ -120,10 +143,10 @@ class DialogMultiplier:
         load_const(C, Yr, offset, ctrl=z)
         C.x(z)
         add_const(C, W, -offset)
-        C.apply(E, [U, V, G], inverse=True)
-        C.apply(I, [U, V, [z]], inverse=True)
+        C.apply(Euc, [U, Z, E, G], inverse=True)
+        C.apply(I, [U, [z]], inverse=True)
         self._is_zero_into(Xr, z)
-        C.free(U + G + Yr + ext + [z])
+        C.free(U + E + G + Yr + [z])
         Yr[:] = W
 
     def apply(self, Xr, Yr, inverse=False):
