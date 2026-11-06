@@ -23,11 +23,10 @@ n, mod = gen.n, gen.mod
 out = {}
 
 
-def euclid_only(C, U, V):
+def euclid_only(C, U, Z, E):
     M = DialogMultiplier(C, mod)
-    G = C.alloc(2 * M.iters)
-    for i in range(M.iters):
-        C.apply(M._euclid_step(M.widths[i]), [U, V, G[2 * i:2 * i + 2]])
+    for w in M.widths:
+        C.apply(M._euclid_step(w), [U, Z, E, C.alloc(3)])
 
 
 def bezout_only(C, Y, S, G):
@@ -41,7 +40,7 @@ def mulsub(C, g, X, Y):
     gen._mulsub(g[0], Y, X)
 
 
-out["euclid_pass"] = count(euclid_only, [n + 2, n + 2])
+out["euclid_pass"] = count(euclid_only, [n, n, 1])
 out["bezout_pass"] = count(bezout_only, [n, n, 2 * 512])
 out["dialog_multiplier_M"] = count(lambda C, X, Y: DialogMultiplier(C, mod).apply(X, Y), [n, n])
 out["lambda_square_subtract"] = count(mulsub, [1, n, n])
