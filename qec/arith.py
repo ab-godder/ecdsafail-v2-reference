@@ -15,6 +15,16 @@ def _uma(C, c, b, a):
     C.cx(c, b)
 
 
+def _maj_into(C, c, b, a, t):
+    """t ^= MAJ(c, b, a), with c, b and a restored."""
+    C.cx(a, b)
+    C.cx(a, c)
+    C.ccx(c, b, t)
+    C.cx(a, t)
+    C.cx(a, c)
+    C.cx(a, b)
+
+
 def _cuma(C, ctrl, c, b, a):
     C.ccx(c, b, a)
     C.ccx(ctrl, c, b)
@@ -42,14 +52,22 @@ def add(C, a, b, cout=None, ctrl=None, cin=None):
     if own_cin:
         (cin,) = C.alloc(1)
     carries = [cin] + a[:-1]
-    for i in range(w):
-        _maj(C, carries[i], b[i], a[i])
-    if cout is not None:
-        _cx(C, ctrl, a[-1], cout)
-    for i in reversed(range(w)):
-        if ctrl is None:
+    if ctrl is None:
+        # The top bit's carry goes straight to cout, so a[-1] never has to hold it.
+        for i in range(w - 1):
+            _maj(C, carries[i], b[i], a[i])
+        if cout is not None:
+            _maj_into(C, carries[-1], b[-1], a[-1], cout)
+        C.cx(a[-1], b[-1])
+        C.cx(carries[-1], b[-1])
+        for i in reversed(range(w - 1)):
             _uma(C, carries[i], b[i], a[i])
-        else:
+    else:
+        for i in range(w):
+            _maj(C, carries[i], b[i], a[i])
+        if cout is not None:
+            _cx(C, ctrl, a[-1], cout)
+        for i in reversed(range(w)):
             _cuma(C, ctrl, carries[i], b[i], a[i])
     if own_cin:
         C.free([cin])
@@ -74,10 +92,14 @@ def gt_into(C, a, b, t, ctrl=None):
     for x in b:
         C.x(x)
     carries = [cin] + a[:-1]
-    for i in range(w):
+    top = w if ctrl is not None else w - 1
+    for i in range(top):
         _maj(C, carries[i], b[i], a[i])
-    _cx(C, ctrl, a[-1], t)
-    for i in reversed(range(w)):
+    if ctrl is None:
+        _maj_into(C, carries[-1], b[-1], a[-1], t)
+    else:
+        C.ccx(ctrl, a[-1], t)
+    for i in reversed(range(top)):
         C.ccx(carries[i], b[i], a[i])
         C.cx(a[i], carries[i])
         C.cx(a[i], b[i])
