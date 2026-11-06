@@ -1,11 +1,11 @@
-{"mode": "SAMPLED_256", "q": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", "addend": "secp256k1 G", "n": 256, "wires": 2311, "ops": 18995461, "counts": {"X": 3026330, "CX": 8759456, "CCX": 7209419, "SWAP": 256}, "lanes": 252, "special_cases": ["inf", "A", "-A", "-2A", "2A", "3A"], "failures": 0, "first_failures": [], "build_seconds": 6.5, "sim_seconds": 1.6}
-        8.75 real         8.53 user         0.17 sys
-          1112506368  maximum resident set size
+{"mode": "SAMPLED_256", "q": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", "addend": "secp256k1 G", "n": 256, "wires": 3326, "ops": 13922390, "counts": {"X": 2129404, "CX": 7718420, "CCX": 4074310, "SWAP": 256}, "lanes": 252, "special_cases": ["inf", "A", "-A", "-2A", "2A", "3A"], "failures": 0, "first_failures": [], "build_seconds": 3.7, "sim_seconds": 1.0}
+        5.20 real         5.12 user         0.07 sys
+          1133510656  maximum resident set size
                    0  average shared memory size
                    0  average unshared data size
                    0  average unshared stack size
-               94297  page reclaims
-                   0  page faults
+               80352  page reclaims
+                  78  page faults
                    0  swaps
                    0  block input operations
                    0  block output operations
@@ -13,7 +13,7 @@
                    0  messages received
                    0  signals received
                    0  voluntary context switches
-                6515  involuntary context switches
-        185459690444  instructions retired
-         28852327472  cycles elapsed
-          1100170464  peak memory footprint
+                1059  involuntary context switches
+        158755467639  instructions retired
+         22360094448  cycles elapsed
+          1124631872  peak memory footprint

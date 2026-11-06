@@ -1,7 +1,9 @@
-{"curve": "y^2=x^3+0x+7 mod 127", "q": "0x7f", "addend": ["0x3", "0x3e"], "n": 7, "num_wires": 70, "ops": 14803, "ccx": 5099, "json_bytes": 582590}
-{"curve": "secp256k1", "q": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", "addend": ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", "0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"], "n": 256, "num_wires": 2311, "ops": 18995461, "ccx": 7209419, "json_bytes": 822274423}
-{"curve": "y^2=x^3+0x+7 mod 127", "q": "0x7f", "addend": ["0x3", "0x3e"], "n": 7, "num_wires": 70, "definitions": 11, "call_sites": 39, "primitive_ops": 1974, "json_bytes": 82002}
-{"curve": "secp256k1", "q": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", "addend": ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", "0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"], "n": 256, "num_wires": 2311, "definitions": 261, "call_sites": 1796, "primitive_ops": 972903, "json_bytes": 43422940}
+{"curve": "y^2=x^3+0x+7 mod 127", "q": "0x7f", "addend": ["0x3", "0x3e"], "n": 7, "num_wires": 105, "ops": 12085, "ccx": 3411, "json_bytes": 468721}
+{"curve": "secp256k1", "q": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", "addend": ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", "0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"], "n": 256, "num_wires": 3326, "ops": 13922390, "ccx": 4074310, "json_bytes": 591213505}
+{"curve": "y^2=x^3+0x+7 mod 127", "q": "0x7f", "addend": ["0x3", "0x3e"], "n": 7, "num_wires": 105, "definitions": 14, "call_sites": 36, "primitive_ops": 2741, "json_bytes": 113120}
+{"curve": "secp256k1", "q": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", "addend": ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", "0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"], "n": 256, "num_wires": 3326, "definitions": 263, "call_sites": 1032, "primitive_ops": 725797, "json_bytes": 32583383}
 254 lanes
 510 lanes
-all receipts written in 97s
+skipping the harness steps: set ECDSAFAIL_V2 to the ecdsafail-v2 benchmark checkout to run them
+receipts/harness_*.json and artifacts/toy127_submission.json keep their committed contents
+all receipts written in 46s

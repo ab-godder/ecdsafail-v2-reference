@@ -1,6 +1,6 @@
 {
  "q": "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f",
- "iteration_bound": 512,
+ "iteration_bound": 511,
  "longest_euclid_run_in_inputs": 511,
  "modadd": {
   "ops": 4383,
@@ -339,11 +339,11 @@
   "first": []
  },
  "dialog_mul": {
-  "ops": 8685300,
-  "wires": 2304,
+  "ops": 6766796,
+  "wires": 2560,
   "lanes": 57,
   "failures": 0,
   "first": [],
-  "seconds": 3.7
+  "seconds": 2.4
  }
 }
