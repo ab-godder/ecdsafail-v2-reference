@@ -57,12 +57,12 @@ Each checker must reach the coverage pinned in `COVERAGE` at the top of `scripts
 
 ## Where the CCX are
 
-At A = G the circuit has 4,145,938 CCX.
+At A = G the circuit has 4,074,310 CCX.
 
 | Part | CCX | Share |
 |---|---|---|
-| Two dialog multipliers, 1,957,868 each | 3,915,736 | 94.4% |
-| Lambda-squared subtract | 212,591 | 5.1% |
+| Two dialog multipliers, 1,957,868 each | 3,915,736 | 96.1% |
+| Lambda-squared subtract | 140,963 | 3.5% |
 | Flags, exception loads, constant adds | 17,611 | 0.4% |
 
 The multipliers and the lambda-squared subtract hold 99.6% of the CCX, and none of them reads A. Spend your effort there. That work also carries over to a future windowed kernel that takes the addend as a quantum input, because that kernel needs the same multiplier and subtract. Constant-adder tricks do not carry over, since a windowed kernel has no classical constant to exploit. They also act on the 0.2% that depends on A.

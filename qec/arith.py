@@ -225,16 +225,51 @@ def cswap(C, ctrl, a, b):
         C.cx(bi, ai)
 
 
-def _square_into(C, y, p, zeros):
-    """p ^= y^2 for p clean, where p has wires for bits 2 and up of the square.
-    Bits 0 and 1 are y[0] and 0. y^2 = sum y[i]*4^i + 2*sum_{i<j} y[i]*y[j]*2^(i+j).
-    Each y[i] adds only the y[j] above it, into the slice no earlier row reached.
-    zeros holds n - 1 clean wires, restored."""
+SQUARE_DEPTH = 2
+
+
+def _square_wires(n, depth):
+    """Wires _square takes from its pool for an n-bit square."""
+    if depth == 0 or n < 4:
+        return 2 * n
+    m = n // 2
+    t = n - m + 1
+    return t + _square_wires(m, depth - 1) + _square_wires(n - m, depth - 1) + _square_wires(t, depth - 1)
+
+
+def _square(C, y, take, depth):
+    """Wires holding y^2, 2n of them, from clean wires handed out by take. y is
+    restored. A row adds only the y[j] above its y[i], and the Karatsuba split
+    uses y^2 = a^2 + 4^m*b^2 + 2^m*((a + b)^2 - a^2 - b^2)."""
     n = len(y)
-    for i in range(n - 1):
-        add(C, y[i + 1:], p[2 * i:n + i - 1], p[n + i - 1], ctrl=y[i])
-    diagonal = [w for pair in zip(y[1:], zeros) for w in pair]
-    add(C, diagonal, p)
+    if depth == 0 or n < 4:
+        p = take(2 * n)
+        C.cx(y[0], p[0])
+        for i in range(n - 1):
+            add(C, y[i + 1:], p[2 * i + 2:n + i + 1], p[n + i + 1], ctrl=y[i])
+        zeros = C.alloc(n - 1)
+        add(C, [w for pair in zip(y[1:], zeros) for w in pair], p[2:])
+        C.free(zeros)
+        return p
+    m = n // 2
+    a, b = y[:m], y[m:]
+    t = take(n - m + 1)
+    for w, u in zip(b, t):
+        C.cx(w, u)
+    zeros = C.alloc(n - 2 * m + 1)
+    add(C, a + zeros, t)
+    C.free(zeros)
+    low, high = _square(C, a, take, depth - 1), _square(C, b, take, depth - 1)
+    mid = _square(C, t, take, depth - 1)
+    zeros = C.alloc(len(mid))
+    for part in (low, high):
+        sub(C, (part + zeros)[:len(mid)], mid)
+    C.free(zeros)
+    r = low + high
+    zeros = C.alloc(len(r) - m)
+    add(C, (mid + zeros)[:len(r) - m], r[m:])
+    C.free(zeros)
+    return r
 
 
 class Mod:
@@ -280,7 +315,7 @@ class Mod:
 
     def square_pool_size(self):
         folds, flags = self.square_plan()
-        return 2 * self.n - 2 + sum(w for _, w in folds) + flags
+        return _square_wires(self.n, SQUARE_DEPTH) + sum(w for _, w in folds) + flags
 
     def square_into(self, C, y, z, pool):
         """z ^= y^2 mod q for any n-bit y and clean z. pool is a clean register of
@@ -294,11 +329,7 @@ class Mod:
         def take(k):
             return [next(wires) for _ in range(k)]
 
-        high = take(2 * n - 2)
-        zeros = C.alloc(n)
-        _square_into(C, y, high, zeros[1:])
-        C.free(zeros[1:])
-        cur = [y[0], zeros[0]] + high
+        cur = _square(C, y, take, SQUARE_DEPTH)
         for h, width in folds:
             low, top = cur[:n], cur[n:]
             acc = take(width)
@@ -320,7 +351,6 @@ class Mod:
             add_const(C, cur, -(self.q << k), ctrl=t)
         for a, b in zip(cur, z):
             C.cx(a, b)
-        C.free(zeros[:1])
 
     def offset(self):
         """c = (2^n - q - 1)/2. Offset residues store x in [0, q) as x + c, which
