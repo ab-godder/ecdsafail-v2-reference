@@ -33,7 +33,7 @@ For a fixed public A = (a, b), the generic kernel fails only on R in {inf, A, -A
 3. runs the generic kernel controlled only through gen, using M^-1 ... M. With gen = 0, every gen-controlled step is the identity, and M^-1 followed by M cancels exactly at the circuit level;
 4. uncomputes gen, then uncomputes each f_k from the output as c AND [R' == O_k]. This works because R -> R + A is a bijection.
 
-M itself is total. For x = 0, Euclid emits an all-zero dialog and leaves u = q instead of 1. Bit 1 of u then distinguishes the two cases for free, and a controlled swap puts y back in place.
+M itself is total. Euclid runs on (u, V) with V = 2v + u, so each step is one uncontrolled add between two b0-controlled complements. For x = 0 a flag z = [x == 0] loads (u, V) = (1, 1) instead of (q, q), so every step idles on registers that fit the shrinking widths and the dialog is all zero. z then drives the controlled swap that puts y back in place, and is uncomputed from the restored x.
 
 ## Data shape
 
