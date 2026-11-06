@@ -201,6 +201,18 @@ def cswap(C, ctrl, a, b):
         C.cx(bi, ai)
 
 
+def _square_into(C, y, p, zeros):
+    """p ^= y^2 for p clean, where p has wires for bits 2 and up of the square.
+    Bits 0 and 1 are y[0] and 0. y^2 = sum y[i]*4^i + 2*sum_{i<j} y[i]*y[j]*2^(i+j).
+    Each y[i] adds only the y[j] above it, into the slice no earlier row reached.
+    zeros holds n - 1 clean wires, restored."""
+    n = len(y)
+    for i in range(n - 1):
+        add(C, y[i + 1:], p[2 * i:n + i - 1], p[n + i - 1], ctrl=y[i])
+    diagonal = [w for pair in zip(y[1:], zeros) for w in pair]
+    add(C, diagonal, p)
+
+
 class Mod:
     """Arithmetic modulo an odd q < 2^n on canonical values in [0, q)."""
 
@@ -227,6 +239,64 @@ class Mod:
         runs on s against _wrap() >> 1, and the low bit of the result is the flag."""
         _reduce(C, s, self._wrap() >> 1)
         s[:] = s[-1:] + s[:-1]
+
+    def square_plan(self):
+        """(folds, flags) for reducing y^2 by folding 2^n to f = 2^n - q. Each fold
+        is (bound on the high part, wires for the result). flags counts the
+        conditional subtractions of q << k that finish the reduction."""
+        n, f = self.n, (1 << self.n) - self.q
+        bound, folds = ((1 << n) - 1) ** 2, []
+        while True:
+            folded = (1 << n) - 1 + (bound >> n) * f
+            if not bound >> n or folded >= bound:
+                break
+            folds.append((bound >> n, folded.bit_length()))
+            bound = folded
+        return folds, (bound // self.q).bit_length()
+
+    def square_pool_size(self):
+        folds, flags = self.square_plan()
+        return 2 * self.n - 2 + sum(w for _, w in folds) + flags
+
+    def square_into(self, C, y, z, pool):
+        """z ^= y^2 mod q for any n-bit y and clean z. pool is a clean register of
+        square_pool_size() wires, and it keeps the garbage for the reverse pass.
+        f only sets which shifts run, so a sparse f is cheap and a dense f is
+        merely slower."""
+        n, f = self.n, (1 << self.n) - self.q
+        folds, flags = self.square_plan()
+        wires = iter(pool)
+
+        def take(k):
+            return [next(wires) for _ in range(k)]
+
+        high = take(2 * n - 2)
+        zeros = C.alloc(n)
+        _square_into(C, y, high, zeros[1:])
+        C.free(zeros[1:])
+        cur = [y[0], zeros[0]] + high
+        for h, width in folds:
+            low, top = cur[:n], cur[n:]
+            acc = take(width)
+            pad = C.alloc(width)
+            for i, w in enumerate(top):
+                C.cx(w, acc[i])
+            done = 1
+            for j in range(1, f.bit_length()):
+                if f >> j & 1:
+                    done |= 1 << j
+                    span = (h * done).bit_length() - j
+                    add(C, (top + pad)[:span], acc[j:j + span])
+            add(C, (low + pad)[:width], acc)
+            C.free(pad)
+            cur = acc
+        for k, t in zip(reversed(range(flags)), take(flags)):
+            gt_const_into(C, self.q << k, cur, t)
+            C.x(t)
+            add_const(C, cur, -(self.q << k), ctrl=t)
+        for a, b in zip(cur, z):
+            C.cx(a, b)
+        C.free(zeros[:1])
 
     def offset(self):
         """c = (2^n - q - 1)/2. Offset residues store x in [0, q) as x + c, which
