@@ -225,7 +225,7 @@ def cswap(C, ctrl, a, b):
         C.cx(bi, ai)
 
 
-SQUARE_DEPTH = 0
+SQUARE_DEPTH = 1
 
 
 def _add_short(C, a, b, sub_=False):
@@ -242,7 +242,7 @@ def _square_wires(n, depth):
         return 2 * n
     m = n // 2
     t = n - m + 1
-    return t + _square_wires(m, depth - 1) + _square_wires(n - m, depth - 1) + _square_wires(t, depth - 1)
+    return _square_wires(m, depth - 1) + _square_wires(n - m, depth - 1) + _square_wires(t, depth - 1)
 
 
 def _square(C, y, take, depth):
@@ -261,12 +261,17 @@ def _square(C, y, take, depth):
         return p
     m = n // 2
     a, b = y[:m], y[m:]
-    t = take(n - m + 1)
+    low, high = _square(C, a, take, depth - 1), _square(C, b, take, depth - 1)
+    # a + b is cheap to rebuild, so its wires go back before the folds need wires.
+    t = C.alloc(n - m + 1)
     for w, u in zip(b, t):
         C.cx(w, u)
     _add_short(C, a, t)
-    low, high = _square(C, a, take, depth - 1), _square(C, b, take, depth - 1)
     mid = _square(C, t, take, depth - 1)
+    _add_short(C, a, t, sub_=True)
+    for w, u in zip(b, t):
+        C.cx(w, u)
+    C.free(t)
     for part in (low, high):
         _add_short(C, part, mid, sub_=True)
     r = low + high
