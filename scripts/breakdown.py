@@ -26,7 +26,7 @@ out = {}
 def euclid_only(C, U, Z, E):
     M = DialogMultiplier(C, mod)
     for w in M.widths:
-        C.apply(M._euclid_step(w), [U, Z, E, C.alloc(3)])
+        C.apply(M._euclid_step(w), [U, Z, E, C.alloc(2)])
 
 
 def bezout_only(C, Y, S, G):

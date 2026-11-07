@@ -30,7 +30,7 @@ class DialogMultiplier:
             C = self.C
 
             def step(U, Z, E, D):
-                top, g1, e_next = D
+                top, g1 = D
                 e, g0 = E[0], Z[0]
                 a, b = U[1:w], Z[1:w]
                 C.cx(e, g0)
@@ -57,16 +57,17 @@ class DialogMultiplier:
                 for x in b:
                     C.x(x)
                     C.cx(g1, x)
+                # The next pending + 1 is g1 on an odd v and e on an even one, so the
+                # dialog keeps g0 and e, and g1 is g0 and the next e.
                 C.x(g0)
-                C.ccx(g0, e, e_next)
+                C.ccx(g0, e, g1)
                 C.x(g0)
-                C.cx(g1, e_next)
                 Z[:] = Z[1:] + [top]
-                E[:] = [e_next]
-                D[:] = [g0, g1, e]
+                E[:] = [g1]
+                D[:] = [g0, e]
 
             n = self.mod.n
-            self._euclid_steps[w] = C.record_shape(step, [n, n, 1, 3])
+            self._euclid_steps[w] = C.record_shape(step, [n, n, 1, 2])
         return self._euclid_steps[w]
 
     def _bezout(self):
@@ -77,8 +78,12 @@ class DialogMultiplier:
             C, mod, n = self.C, self.mod, self.mod.n
 
             def step(g, R, W):
-                g0, g1 = g
+                g0, e = g
+                (g1,) = C.alloc(1)
+                C.ccx(g0, e, g1)
                 cswap(C, g1, R, W)
+                C.ccx(g0, e, g1)
+                C.free([g1])
                 mod.offset_dbl(C, W)
                 # g0 = 0 inverts v' = v/2, so W = 2W - R. Complementing an
                 # offset residue negates it, and the complement of 0's residue
@@ -117,13 +122,13 @@ class DialogMultiplier:
         Z = list(Xr)
         E = C.alloc(1)
         I = C.run(self._init_u, [U, [z]])
-        G = C.alloc(3 * T)
+        G = C.alloc(2 * T)
 
         def euclid(U, Z, E, G):
             for i in range(T):
-                D = G[3 * i:3 * i + 3]
+                D = G[2 * i:2 * i + 2]
                 C.apply(self._euclid_step(self.widths[i]), [U, Z, E, D])
-                G[3 * i:3 * i + 3] = D
+                G[2 * i:2 * i + 2] = D
 
         Euc = C.run(euclid, [U, Z, E, G])
         W = C.alloc(n)
@@ -133,7 +138,7 @@ class DialogMultiplier:
             C.cx(y, w)
         bz = self._bezout()
         for i in reversed(range(T)):
-            C.apply(bz, [G[3 * i:3 * i + 2], Yr, W])
+            C.apply(bz, [[G[2 * i], G[2 * i + 3] if i < T - 1 else E[0]], Yr, W])
         # (R + W)/2 is xy for x != 0 and y for x = 0.
         mod.offset_add(C, Yr, W)
         C.apply(C.record_shape(lambda s: mod.offset_dbl(C, s), [n]), [W], inverse=True)
