@@ -8,7 +8,7 @@ The limits check confirms the circuit fits the benchmark's interface and caps. I
 - `limits-wires` checks at most 4,096 wires for G and every built addend.
 - `limits-upload` checks the hierarchical JSON for G and for every built addend is under 104,857,600 bytes.
 - `limits-gates` checks every emitted primitive is X, CX, CCX or SWAP, in the emitted JSON, the JSON of every built addend, and every expanded 256-bit upload.
-- `limits-charge` reports the benchmark charge as pending.
+- `limits-charge` reports the live board's charge at G against its limit.
 
 ## How to get to it (user POV)
 

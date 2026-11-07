@@ -1,14 +1,14 @@
 {"q": 3, "worst_iterations": 3, "bound": 3, "width_schedule_ok": true, "multiplier_ok": true}
 {"q": 5, "worst_iterations": 5, "bound": 5, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 7, "worst_iterations": 5, "bound": 6, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 7, "worst_iterations": 5, "bound": 5, "width_schedule_ok": true, "multiplier_ok": true}
 {"q": 11, "worst_iterations": 7, "bound": 7, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 13, "worst_iterations": 7, "bound": 8, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 31, "worst_iterations": 9, "bound": 10, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 13, "worst_iterations": 7, "bound": 7, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 31, "worst_iterations": 9, "bound": 9, "width_schedule_ok": true, "multiplier_ok": true}
 {"q": 43, "worst_iterations": 11, "bound": 11, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 61, "worst_iterations": 11, "bound": 12, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 127, "worst_iterations": 13, "bound": 14, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 251, "worst_iterations": 15, "bound": 16, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 509, "worst_iterations": 17, "bound": 18, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 1021, "worst_iterations": 19, "bound": 20, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": 4093, "worst_iterations": 23, "bound": 24, "width_schedule_ok": true, "multiplier_ok": true}
-{"q": "secp256k1", "bound": 512, "random_pairs": 2000, "multiplier_ok": true}
+{"q": 61, "worst_iterations": 11, "bound": 11, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 127, "worst_iterations": 13, "bound": 13, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 251, "worst_iterations": 15, "bound": 15, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 509, "worst_iterations": 17, "bound": 17, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 1021, "worst_iterations": 19, "bound": 19, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": 4093, "worst_iterations": 23, "bound": 23, "width_schedule_ok": true, "multiplier_ok": true}
+{"q": "secp256k1", "bound": 511, "random_pairs": 2000, "multiplier_ok": true}

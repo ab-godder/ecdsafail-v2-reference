@@ -14,6 +14,20 @@ The checkers run in parallel, so wall time depends on your cores and load. On an
 - `INVARIANTS.md` says what each check protects, what no script can check, where the CCX are, and how to hand a change back.
 - `.claude/skills/verify-reference-circuit/` is a Claude Code skill that drives the generator, the checks, the cost report and the limits, with a feature map under `features/`.
 
+## This branch against the reference
+
+Costs at A = G, from `qcb diagnostic check` on the hierarchical upload. This branch has not been entered on the board, so these are local results on sampled inputs.
+
+| | Reference | This branch |
+|---|---|---|
+| `lowered_t` | 50,465,933 | 28,810,880 |
+| `qubit_time` | 164,135,627,418 | 74,522,959,296 |
+| `toffoli` | 7,209,419 | 4,115,840 |
+| `allocated_wires` | 2,311 | 1,632 |
+| `scheduled_ticks` | 71,023,638 | 45,663,578 |
+| `expanded_ops` charge | 20,960,620 | 15,647,747 |
+| upload bytes, hierarchical circuit JSON | 43,422,940 | 33,674,606 |
+
 ## Result on the live board
 
 The board tested this circuit on 2026-11-06 as `reference-c4`, evaluation `eval-6d612fd4c6156cdb`, in round 2. It ended `TESTED_UNQUALIFIED`, with 0 of 10 boundary cases and 0 of 10,000 seeded draws failing. That is a sampled pass and not a qualification. Its raw costs are the line to beat.
@@ -89,18 +103,20 @@ All numbers are measured unless marked as estimates.
 
 | | toy q=127 | secp256k1, A = G | cap |
 |---|---|---|---|
-| wires | 70 | 2,311 | 4,096 |
-| ops | 14,803 | 18,995,461 | 10,000,000 |
-| CCX | 5,099 | 7,209,419 | |
-| T + T-dagger from repo lowering | 35,693 (7.0 per CCX) | 50,465,933 (7 x CCX) | |
+| wires | 57 | 1,632 | 4,096 |
+| ops | 12,277 | 14,020,218 | 10,000,000 |
+| CCX | 3,535 | 4,115,840 | |
+| T at 7 per CCX | 24,745 | 28,810,880 | |
 | measurements, R or Hmr | 0 | 0 | 0 |
-| SubmittedMethod JSON bytes | 583,085 | 822,274,918 | 104,857,600 |
-| `v2_ir` validator, service caps | PASS | REJECT, ops | |
-| challenge executor lanes | 254 of 254 correct (exhaustive) | 510 of 510 correct (sampled) | |
+| flat circuit JSON bytes | 473,586 | 591,016,012 | 104,857,600 |
+| simulated lanes, `qec/sim.py` | 254 of 254 correct (exhaustive) | 510 of 510 correct (sampled) | |
 | dirty scratch or phase lanes | 0 | 0 | |
-| `is_qualified` | false | false | |
 
-Where the 256-bit CCX go (`receipts/secp256k1_breakdown.json`). One dialog multiplier is 3,140,864 CCX: two Euclid passes of 787,968 each, one Bezout pass of 1,564,672, and 256 for the n-bit controlled swap between them. The kernel uses it twice. The lambda-squared subtraction is 910,080 CCX. Flags and constant adds make up the remaining 17,611.
+The harness has not been re-run on this circuit, because it needs the unpublished benchmark checkout. `receipts/harness_*.json` and `artifacts/toy127_submission.json` still describe the reference. They recorded `is_qualified` false.
+
+Where the 256-bit CCX go (`receipts/secp256k1_breakdown.json`). One dialog multiplier is 1,964,330 CCX: two Euclid passes of 391,681 each, one Bezout pass of 1,171,212, and 9,756 to start and finish Bezout and pack the dialog. The kernel uses it twice. The lambda-squared subtraction is 169,569 CCX. Flags and constant adds make up the remaining 17,611.
+
+The paragraphs below record how the reference reached 7,209,419 CCX. Later changes took it to the figures above: offset residues and W form in Bezout, an integer square with folding and one Karatsuba level, a one-chain Euclid step, a tighter iteration bound, reusing the Euclid registers' wires in Bezout, a packed dialog, and control order chosen for depth.
 
 The controlled subtract and the controlled modular add run a controlled CDKM ripple instead of copying `ctrl*a` into an AND register. A controlled subtract costs 3w CCX instead of 4w, and a controlled modular add went from 10n + 2 to 9n + 4. That took the 256-bit point addition from 8,686,084 to 7,967,236 CCX, 8.3% fewer.
 
@@ -111,8 +127,8 @@ Exactness evidence, strongest first:
 1. **Exhaustive gate-level check.** `receipts/toy_exhaustive.json` covers 36 instances: 18 primes of 4, 6, 7, 8, 9 and 10 bits, 2 addends each, every curve point plus infinity, and both control values. It finds 0 failures, with all scratch returned to zero. The same generator code emits the 256-bit circuit. Only the constants and the bound-derived width schedule differ.
 2. **Challenge executor.** `receipts/harness_toy127.json` and `receipts/harness_secp256k1.json` replay the emitted JSON on `v2_runtime::BitSlicedExecutor`. Expected values come from `qec/curve.py`, which shares no code with the generator.
 3. **256-bit boundary components.** `receipts/secp256k1_components.json` covers modadd with and without ctrl on edge-by-edge pairs around q and 2^255 and at q - f and 2^256 - 1 mod q, where f = 2^256 - q, plus moddbl on the same values and cneg. It runs cmodadd_const and gt_const_into with ctrl 0 and 1, gt_const_into without ctrl, and add_const under ctrl with a carry out, each on the kernel's constants for G (q - a, q - b, 3a and a) and on sparse and dense edge constants (1, f, 2^255, q - 1, q - 2, 2^255 - 1 and 2^256 - 1 mod q), with inputs on both sides of each constant. It also runs the multiplier on x = 0 and on x values whose Euclid run takes 511 of the proven 512 iterations. All pass.
-4. **Proven iteration bound.** bitlen(u) + bitlen(v) drops by at least 1 per active Euclid step, so 2n - 1 iterations always suffice. That is 511 at secp256k1. `receipts/model_check.jsonl` shows the observed worst case never exceeds the bound at any of the 13 tested q. It equals the bound at q = 3, 5, 11 and 43 and is one below it elsewhere.
-5. **Checker sensitivity.** A must-fail control (an extra X on the output) fails every lane. Exhaustively, 163 of 200 random CCX-to-CX demotions are caught, and the survivors are correct on the whole promise domain, so they are equivalent circuits. Most CCX in constant adders and idle Euclid tails fire only on rare carries, so random 256-bit sampling cannot separate an exact circuit from an approximate one, which is why items 1, 3 and 4 carry the exactness claim.
+4. **Proven iteration bound.** bitlen(u) + bitlen(v) drops by at least 1 per active Euclid step, so 2n - 1 iterations always suffice. That is 511 at secp256k1. `receipts/model_check.jsonl` shows the observed worst case never exceeds the bound at any of the 13 tested q. It equals the bound at all 13, so the bound is tight on the tested q.
+5. **Checker sensitivity.** A must-fail control (an extra X on the output) fails every lane. Exhaustively, 177 of 200 random CCX-to-CX demotions are caught at q = 127, and the survivors are correct on the whole promise domain. Some can fail off the curve, so they are not equivalent circuits. `scripts/multiplier_check.py` runs its own control on the multiplier at q = 59, and catches 194 of 200. Most CCX in constant adders and idle Euclid tails fire only on rare carries, so random 256-bit sampling cannot separate an exact circuit from an approximate one, which is why items 1, 3 and 4 carry the exactness claim.
 
 The circuit is pure X, CX, CCX and SWAP, so it is a phase-free permutation. Basis exactness with clean scratch on the promise domain therefore gives the exact unitary on superpositions and entangled references (QNT-04). Outside the promise it is still a permutation, which satisfies QNT-06.
 
@@ -120,8 +136,8 @@ The circuit is pure X, CX, CCX and SWAP, so it is a phase-free permutation. Basi
 
 These gates are listed in the order they blocked the flat upload on the earlier benchmark. Gates 1 and 2 do not block the hierarchical upload on the live board, which has the limits in "Result on the live board" above. Gates 3 to 5 remain open.
 
-1. **Operation cap.** 18,995,461 ops against a cap of 10,000,000 (`MAX_DECLARED_RECORDS`). One multiplier alone is 8,685,300 ops. The paper reports about 2^24 total gates per addition even for its approximate circuits, so no published point addition fits this cap.
-2. **Upload cap.** The service parses plain JSON, at about 43 bytes per op. 100 MiB therefore holds about 2.4M ops, roughly 8x fewer than this circuit needs. This also binds before the operation cap does.
+1. **Operation cap.** 14,020,218 ops against a cap of 10,000,000 (`MAX_DECLARED_RECORDS`). One multiplier alone is 6,786,012 ops. The paper reports about 2^24 total gates per addition even for its approximate circuits, so no published point addition fits this cap.
+2. **Upload cap.** The service parses plain JSON, at about 43 bytes per op. 100 MiB therefore holds about 2.4M ops, roughly 6x fewer than this circuit needs. This also binds before the operation cap does.
 3. **Whole-attack T budget (estimate).** DEF-02's binary wrapper makes 512 controlled additions, which comes to about 2.6e10 T against the 3.25e9 cap. A w = 16 windowed interface (QNT-02) would need about 32 additions plus exact lookups, roughly 2.0e9 T. That would fit, but it means a coherent-addend kernel, which is not built here.
 4. **Qualification route.** `QualificationGraph` requires a universal secp256k1 certificate checked by a `SoundTheoremChecker`, a Shor wrapper certificate, a schedule, observations, and a retry model. The production registry holds no sound checker, so every artifact ends `is_qualified: false` with `No sound theorem checker exists`. This candidate supplies none of those artifacts.
 5. **Formal proof.** Exactness rests on exhaustive toy verification of a size-parametric generator, full-size boundary tests, and the proven iteration bound. That is strong evidence, not a machine-checked proof.

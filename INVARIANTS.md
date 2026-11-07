@@ -37,7 +37,7 @@ Each checker must reach the coverage pinned in `COVERAGE` at the top of `scripts
 
 **I3 gate set.** Every emitted primitive is X, CX, CCX or SWAP, with no measurement and no reset. The profile disables measurement cleanup, and a circuit of these four gates is a permutation with no phases. That is why basis-state exactness with clean scratch gives the exact unitary on superpositions. A single Z, CZ or measurement breaks that argument even when every basis check passes. I3 reads the emitted JSON at toy and 256-bit sizes and the JSON of every built addend, and counts the gate kinds in every toy instance and every expanded 256-bit upload.
 
-**I5 addend independence of definitions.** The gate builds the 256-bit kernel hierarchically for [1]G to [8]G and the seeded random addends, 1 of them in quick mode and 16 in full mode. Every definition must be identical across them. The gate compares the sha256 of each definition after it parses the JSON and writes it back compactly, so whitespace in the file does not count. Key order does, because the digest keeps the order the file uses. Today all 261 definitions are identical, and A enters only through the top level, in the `cmodadd_const` calls in `_kernel` and the four exception compares and loads in `build` (`qec/point_add.py:110-190`). Keep it that way. A whole attack runs this kernel for many addends, and shared definitions let one upload of the expensive parts serve every addend.
+**I5 addend independence of definitions.** The gate builds the 256-bit kernel hierarchically for [1]G to [8]G and the seeded random addends, 1 of them in quick mode and 16 in full mode. Every definition must be identical across them. The gate compares the sha256 of each definition after it parses the JSON and writes it back compactly, so whitespace in the file does not count. Key order does, because the digest keeps the order the file uses. Today all 264 definitions are identical, and A enters only through the top level, in the `cmodadd_const` calls in `_kernel` and the four exception compares and loads in `build` (`qec/point_add.py:110-190`). Keep it that way. A whole attack runs this kernel for many addends, and shared definitions let one upload of the expensive parts serve every addend.
 
 **I6 cost at G and sample statistics.** I6 reports CCX, T = 7 x CCX, ops and wires at G. Over the addends the gate built, [1]G to [8]G and a seeded random sample, it reports the sample maximum and the sample minimum. These are statistics of that sample, not bounds. I6 shows the sample maximum T against the reference, 50,465,989, the largest T any sampled addend reached at commit `8ca9b0e`. I6 never fails on cost. It fails only when its counts disagree with the expanded upload that `I2.secp` simulated, at every simulated addend, or with the flat circuit at toy size and, in full mode, at G.
 
@@ -57,12 +57,12 @@ Each checker must reach the coverage pinned in `COVERAGE` at the top of `scripts
 
 ## Where the CCX are
 
-At A = G the circuit has 4,145,938 CCX.
+At A = G the circuit has 4,115,840 CCX.
 
 | Part | CCX | Share |
 |---|---|---|
-| Two dialog multipliers, 1,957,868 each | 3,915,736 | 94.4% |
-| Lambda-squared subtract | 212,591 | 5.1% |
+| Two dialog multipliers, 1,964,330 each | 3,928,660 | 95.5% |
+| Lambda-squared subtract | 169,569 | 4.1% |
 | Flags, exception loads, constant adds | 17,611 | 0.4% |
 
 The multipliers and the lambda-squared subtract hold 99.6% of the CCX, and none of them reads A. Spend your effort there. That work also carries over to a future windowed kernel that takes the addend as a quantum input, because that kernel needs the same multiplier and subtract. Constant-adder tricks do not carry over, since a windowed kernel has no classical constant to exploit. They also act on the 0.2% that depends on A.
