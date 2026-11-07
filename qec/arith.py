@@ -309,13 +309,14 @@ class Mod:
     def square_plan(self):
         """(folds, flags) for reducing y^2 by folding 2^n to f = 2^n - q. Each fold
         is (bound on the high part, wires it adds above the low n, wires for its
-        product with f when that is built apart). flags counts the conditional
-        subtractions of q << k that finish the reduction."""
+        product with f when that is built apart). Folding stops below 2q, where one
+        subtraction is cheaper. flags counts the conditional subtractions of
+        q << k that finish the reduction."""
         n, f = self.n, (1 << self.n) - self.q
         bound, folds = ((1 << n) - 1) ** 2, []
         while True:
             folded = (1 << n) - 1 + (bound >> n) * f
-            if not bound >> n or folded >= bound:
+            if bound < 2 * self.q or folded >= bound:
                 break
             h = bound >> n
             # Only a high part narrower than n pays for summing its product first:
@@ -326,7 +327,7 @@ class Mod:
 
     def square_pool_size(self):
         folds, flags = self.square_plan()
-        return _square_wires(self.n, SQUARE_DEPTH) + sum(w + p for _, w, p in folds) + flags
+        return _square_wires(self.n, SQUARE_DEPTH) + sum(w for _, w, _ in folds) + flags
 
     def square_into(self, C, y, pool):
         """Leaves y^2 mod q in pool[:n] for any n-bit y, with pool clean on entry
@@ -345,15 +346,20 @@ class Mod:
         low, top = cur[:n], cur[n:]
         for h, extra, apart in folds:
             low = low[:n] + take(extra)
-            acc = take(apart) if apart else low
-            done = 0
+            acc = C.alloc(apart) if apart else low
+            shifts, done = [], 0
             for j in range(f.bit_length()):
                 if f >> j & 1:
                     done |= 1 << j
-                    span = (h * done + (0 if apart else (1 << n) - 1)).bit_length() - j
-                    _add_short(C, top[:span], acc[j:j + span])
+                    shifts.append((j, (h * done + (0 if apart else (1 << n) - 1)).bit_length() - j))
+            for j, span in shifts:
+                _add_short(C, top[:span], acc[j:j + span])
             if apart:
+                # The product is cheap to rebuild, so its wires go back at once.
                 _add_short(C, acc, low)
+                for j, span in reversed(shifts):
+                    _add_short(C, top[:span], acc[j:j + span], sub_=True)
+                C.free(acc)
             top = low[n:]
         for k, t in zip(reversed(range(flags)), take(flags)):
             gt_const_into(C, self.q << k, low, t)
