@@ -12,6 +12,7 @@ from array import array
 from typing import NamedTuple
 
 X, CX, CCX, SWAP = 0, 1, 2, 3
+CCX_TICKS = 8
 OPNAMES = {X: "X", CX: "CX", CCX: "CCX", SWAP: "SWAP"}
 
 
@@ -54,6 +55,7 @@ class Circuit:
         self.calls = [] if hierarchical else None
         self.num_wires = 0
         self.free_stack = []
+        self.ready = {}
 
     # allocation
 
@@ -74,18 +76,33 @@ class Circuit:
 
     def x(self, a):
         self.prims.extend((X, a, a, a))
+        self.ready[a] = self.ready.get(a, 0) + 1
+
+    def _touch(self, wires, ticks):
+        ready = self.ready
+        t = max(ready.get(w, 0) for w in wires) + ticks
+        for w in wires:
+            ready[w] = t
 
     def cx(self, a, b):
         self.prims.extend((CX, a, b, b))
+        self._touch((a, b), 1)
 
     def ccx(self, a, b, c):
         if a == b:
-            self.prims.extend((CX, a, c, c))
-        else:
-            self.prims.extend((CCX, a, b, c))
+            self.cx(a, c)
+            return
+        # Lowering lets a chain through the first control overlap more, so the
+        # control that comes free last goes first. The order changes no logic.
+        ready = self.ready
+        if ready.get(b, 0) > ready.get(a, 0):
+            a, b = b, a
+        self.prims.extend((CCX, a, b, c))
+        self._touch((a, b, c), CCX_TICKS)
 
     def swap(self, a, b):
         self.prims.extend((SWAP, a, b, b))
+        self._touch((a, b), 3)
 
     @property
     def ops(self):
@@ -104,8 +121,10 @@ class Circuit:
         flat_in = flatten(regs)
         start = len(self.prims)
         first_call = len(self.calls) if self.calls is not None else 0
-        saved_stack, saved_hw = list(self.free_stack), self.num_wires
+        saved_stack, saved_hw, saved_ready = list(self.free_stack), self.num_wires, self.ready
+        self.ready = {}
         fn(*regs)
+        self.ready = saved_ready
         flat_out = flatten(regs)
         ops = self.prims[start:]
         del self.prims[start:]
