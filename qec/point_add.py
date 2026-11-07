@@ -131,7 +131,11 @@ class DialogMultiplier:
                 G[2 * i:2 * i + 2] = D
 
         Euc = C.run(euclid, [U, Z, E, G])
-        W = C.alloc(n)
+        # Euclid ends on (u, v) = (1, 0), so Bezout runs W on Z's clean wires and has
+        # U's wires for its carries. R's wires are clean afterwards and take Z's place.
+        W = Z
+        load_const(C, U, 1)
+        C.free(U)
         mod, offset = self.mod, self.mod.offset()
         add_const(C, Yr, offset)
         for y, w in zip(Yr, W):
@@ -148,10 +152,15 @@ class DialogMultiplier:
         load_const(C, Yr, offset, ctrl=z)
         C.x(z)
         add_const(C, W, -offset)
+        Z = list(Yr)
+        U = C.alloc(n)
+        load_const(C, U, 1)
         C.apply(Euc, [U, Z, E, G], inverse=True)
         C.apply(I, [U, [z]], inverse=True)
+        Xr[:] = Z
+        C.free(U + E + G)
         self._is_zero_into(Xr, z)
-        C.free(U + E + G + Yr + [z])
+        C.free([z])
         Yr[:] = W
 
     def apply(self, Xr, Yr, inverse=False):
