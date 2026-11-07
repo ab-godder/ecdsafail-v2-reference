@@ -31,8 +31,9 @@ def euclid_only(C, U, Z, E):
 
 def bezout_only(C, Y, S, G):
     M = DialogMultiplier(C, mod)
+    e = C.alloc(1)
     for i in reversed(range(M.iters)):
-        C.apply(M._bezout(), [G[2 * i:2 * i + 2], Y, S])
+        C.apply(M._bezout(), [G[2 * i:2 * i + 2] + e, Y, S])
 
 
 def mulsub(C, g, X, Y):

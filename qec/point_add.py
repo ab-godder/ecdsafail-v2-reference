@@ -7,6 +7,37 @@ from .curve import Curve
 from .model import iteration_bound, width_schedule
 
 
+def pack_dialog(C, w):
+    """Packs three dialog pairs (a, b), (c, d), (e, f), where each second bit
+    implies the first, into five wires and leaves f clean. There are 27 such
+    states. A clear first bit leaves its second bit free to hold f. The only case
+    left has a = c = e = 1 and f = 1, and it moves to a = c = 0, d = 1, a pattern
+    no valid input reaches, which also tells the last step when to clear f."""
+    a, b, c, d, e, f = w
+    C.x(a)
+    cswap(C, a, [b], [f])
+    C.x(a)
+    (m,) = C.alloc(1)
+    C.x(c)
+    C.ccx(a, c, m)
+    C.x(c)
+    cswap(C, m, [d], [f])
+    C.x(c)
+    C.ccx(a, c, m)
+    C.x(c)
+    C.cx(f, a)
+    C.cx(f, c)
+    cswap(C, f, [d], [e])
+    C.x(a)
+    C.x(c)
+    C.ccx(a, c, m)
+    C.ccx(m, d, f)
+    C.ccx(a, c, m)
+    C.x(c)
+    C.x(a)
+    C.free([m])
+
+
 class DialogMultiplier:
     """M(x, y) = (x, x*y mod q) for x != 0, M(0, y) = (0, y); see model.py."""
 
@@ -58,10 +89,12 @@ class DialogMultiplier:
                     C.x(x)
                     C.cx(g1, x)
                 # The next pending + 1 is g1 on an odd v and e on an even one, so the
-                # dialog keeps g0 and e, and g1 is g0 and the next e.
+                # dialog keeps g0 and the change in e, which implies g0. Then g1 is g0
+                # and the next e, and Bezout can walk e back from its last value.
                 C.x(g0)
                 C.ccx(g0, e, g1)
                 C.x(g0)
+                C.cx(g1, e)
                 Z[:] = Z[1:] + [top]
                 E[:] = [g1]
                 D[:] = [g0, e]
@@ -78,12 +111,13 @@ class DialogMultiplier:
             C, mod, n = self.C, self.mod, self.mod.n
 
             def step(g, R, W):
-                g0, e = g
+                g0, d, e = g
                 (g1,) = C.alloc(1)
                 C.ccx(g0, e, g1)
                 cswap(C, g1, R, W)
                 C.ccx(g0, e, g1)
                 C.free([g1])
+                C.cx(d, e)
                 mod.offset_dbl(C, W)
                 # g0 = 0 inverts v' = v/2, so W = 2W - R. Complementing an
                 # offset residue negates it, and the complement of 0's residue
@@ -96,7 +130,8 @@ class DialogMultiplier:
                     C.cx(g0, r)
                 C.x(g0)
 
-            self._bezout_step = C.record_shape(step, [2, n, n])
+            self._bezout_step = C.record_shape(step, [3, n, n])
+            self._pack = C.record_shape(lambda w: pack_dialog(C, w), [6])
         return self._bezout_step
 
     def _is_zero_into(self, bits, t):
@@ -122,13 +157,22 @@ class DialogMultiplier:
         Z = list(Xr)
         E = C.alloc(1)
         I = C.run(self._init_u, [U, [z]])
-        G = C.alloc(2 * T)
+        groups, rest = T // 3, T % 3
+        G = C.alloc(5 * groups + 2 * rest + (not rest))
+        bz = self._bezout()
 
         def euclid(U, Z, E, G):
+            spare, kept = list(G), []
             for i in range(T):
-                D = G[2 * i:2 * i + 2]
+                D = [spare.pop(), spare.pop()]
                 C.apply(self._euclid_step(self.widths[i]), [U, Z, E, D])
-                G[2 * i:2 * i + 2] = D
+                kept += D
+                if i % 3 == 2:
+                    w = kept[-6:]
+                    C.apply(self._pack, [w])
+                    kept[-6:] = w[:5]
+                    spare.append(w[5])
+            G[:] = kept + spare
 
         Euc = C.run(euclid, [U, Z, E, G])
         # Euclid ends on (u, v) = (1, 0), so Bezout runs W on Z's clean wires and has
@@ -140,9 +184,20 @@ class DialogMultiplier:
         add_const(C, Yr, offset)
         for y, w in zip(Yr, W):
             C.cx(y, w)
-        bz = self._bezout()
-        for i in reversed(range(T)):
-            C.apply(bz, [[G[2 * i], G[2 * i + 3] if i < T - 1 else E[0]], Yr, W])
+        (e,) = C.alloc(1)
+        C.cx(E[0], e)
+        tail = G[5 * groups:5 * groups + 2 * rest]
+        for i in reversed(range(rest)):
+            C.apply(bz, [tail[2 * i:2 * i + 2] + [e], Yr, W])
+        for g in reversed(range(groups)):
+            (clean,) = C.alloc(1)
+            w = G[5 * g:5 * g + 5] + [clean]
+            C.apply(self._pack, [w], inverse=True)
+            for i in (4, 2, 0):
+                C.apply(bz, [w[i:i + 2] + [e], Yr, W])
+            C.apply(self._pack, [w])
+            C.free([w[5]])
+        C.free([e])
         # (R + W)/2 is xy for x != 0 and y for x = 0.
         mod.offset_add(C, Yr, W)
         C.apply(C.record_shape(lambda s: mod.offset_dbl(C, s), [n]), [W], inverse=True)
