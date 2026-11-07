@@ -40,11 +40,11 @@ def square_case(mod, ys):
     q, n, k = mod.q, mod.n, mod.square_pool_size()
 
     def build(C):
-        y, x, g, z, pool = C.alloc(n), C.alloc(n), C.alloc(1), C.alloc(n), C.alloc(k)
-        square = C.record_shape(lambda a, b, p: mod.square_into(C, a, b, p), [n, n, k])
-        C.apply(square, [y, z, pool])
-        mod.modadd(C, z, x, ctrl=g[0])
-        C.apply(square, [y, z, pool], inverse=True)
+        y, x, g, pool = C.alloc(n), C.alloc(n), C.alloc(1), C.alloc(k)
+        square = C.record_shape(lambda a, p: mod.square_into(C, a, p), [n, k])
+        C.apply(square, [y, pool])
+        mod.modadd(C, pool[:n], x, ctrl=g[0])
+        C.apply(square, [y, pool], inverse=True)
         return [y, x, g], [y, x, g]
     inputs = [(y, x, g) for y in ys for x, g in ((0, 1), (1, 1), (q - 1, 1), (1, 0))]
     return run_case(build, inputs, lambda y, x, g: (y, (x + g * y * y) % q, g))

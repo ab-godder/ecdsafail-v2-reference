@@ -212,14 +212,14 @@ class ControlledPointAdd:
         with no modular steps, reduced, subtracted once, and reversed."""
         C, mod, n = self.C, self.mod, self.n
         pool_size = mod.square_pool_size()
-        Z, pool = C.alloc(n), C.alloc(pool_size)
+        pool = C.alloc(pool_size)
         if self._modadd_blk is None:
             self._modadd_blk = C.record_shape(lambda k, a, b: mod.modadd(C, a, b, ctrl=k[0]), [1, n, n])
-            self._square = C.record_shape(lambda y, z, p: mod.square_into(C, y, z, p), [n, n, pool_size])
-        C.apply(self._square, [Yr, Z, pool])
-        C.apply(self._modadd_blk, [[gen], Z, Xr], inverse=True)
-        C.apply(self._square, [Yr, Z, pool], inverse=True)
-        C.free(Z + pool)
+            self._square = C.record_shape(lambda y, p: mod.square_into(C, y, p), [n, pool_size])
+        C.apply(self._square, [Yr, pool])
+        C.apply(self._modadd_blk, [[gen], pool[:n], Xr], inverse=True)
+        C.apply(self._square, [Yr, pool], inverse=True)
+        C.free(pool)
 
     def _kernel(self, gen, Xr, Yr):
         C, mod, q = self.C, self.mod, self.curve.q

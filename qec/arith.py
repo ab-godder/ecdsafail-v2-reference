@@ -225,16 +225,53 @@ def cswap(C, ctrl, a, b):
         C.cx(bi, ai)
 
 
-def _square_into(C, y, p, zeros):
-    """p ^= y^2 for p clean, where p has wires for bits 2 and up of the square.
-    Bits 0 and 1 are y[0] and 0. y^2 = sum y[i]*4^i + 2*sum_{i<j} y[i]*y[j]*2^(i+j).
-    Each y[i] adds only the y[j] above it, into the slice no earlier row reached.
-    zeros holds n - 1 clean wires, restored."""
+SQUARE_DEPTH = 0
+
+
+def _add_short(C, a, b, sub_=False):
+    """b += a or b -= a, for a that fits in fewer wires than b. CDKM keeps carries
+    on a's wires, so the shortfall takes clean wires for just this add."""
+    zeros = C.alloc(max(0, len(b) - len(a)))
+    (sub if sub_ else add)(C, (a + zeros)[:len(b)], b)
+    C.free(zeros)
+
+
+def _square_wires(n, depth):
+    """Wires _square takes from its pool for an n-bit square."""
+    if depth == 0 or n < 4:
+        return 2 * n
+    m = n // 2
+    t = n - m + 1
+    return t + _square_wires(m, depth - 1) + _square_wires(n - m, depth - 1) + _square_wires(t, depth - 1)
+
+
+def _square(C, y, take, depth):
+    """Wires holding y^2, 2n of them, from clean wires handed out by take. y is
+    restored. A row adds only the y[j] above its y[i], and the Karatsuba split
+    uses y^2 = a^2 + 4^m*b^2 + 2^m*((a + b)^2 - a^2 - b^2)."""
     n = len(y)
-    for i in range(n - 1):
-        add(C, y[i + 1:], p[2 * i:n + i - 1], p[n + i - 1], ctrl=y[i])
-    diagonal = [w for pair in zip(y[1:], zeros) for w in pair]
-    add(C, diagonal, p)
+    if depth == 0 or n < 4:
+        p = take(2 * n)
+        C.cx(y[0], p[0])
+        for i in range(n - 1):
+            add(C, y[i + 1:], p[2 * i + 2:n + i + 1], p[n + i + 1], ctrl=y[i])
+        zeros = C.alloc(n - 1)
+        add(C, [w for pair in zip(y[1:], zeros) for w in pair], p[2:])
+        C.free(zeros)
+        return p
+    m = n // 2
+    a, b = y[:m], y[m:]
+    t = take(n - m + 1)
+    for w, u in zip(b, t):
+        C.cx(w, u)
+    _add_short(C, a, t)
+    low, high = _square(C, a, take, depth - 1), _square(C, b, take, depth - 1)
+    mid = _square(C, t, take, depth - 1)
+    for part in (low, high):
+        _add_short(C, part, mid, sub_=True)
+    r = low + high
+    _add_short(C, mid, r[m:])
+    return r
 
 
 class Mod:
@@ -266,27 +303,32 @@ class Mod:
 
     def square_plan(self):
         """(folds, flags) for reducing y^2 by folding 2^n to f = 2^n - q. Each fold
-        is (bound on the high part, wires for the result). flags counts the
-        conditional subtractions of q << k that finish the reduction."""
+        is (bound on the high part, wires it adds above the low n, wires for its
+        product with f when that is built apart). flags counts the conditional
+        subtractions of q << k that finish the reduction."""
         n, f = self.n, (1 << self.n) - self.q
         bound, folds = ((1 << n) - 1) ** 2, []
         while True:
             folded = (1 << n) - 1 + (bound >> n) * f
             if not bound >> n or folded >= bound:
                 break
-            folds.append((bound >> n, folded.bit_length()))
+            h = bound >> n
+            # Only a high part narrower than n pays for summing its product first:
+            # then just one add ripples the whole width of the low bits.
+            folds.append((h, folded.bit_length() - n, (h * f).bit_length() if h.bit_length() < n else 0))
             bound = folded
         return folds, (bound // self.q).bit_length()
 
     def square_pool_size(self):
         folds, flags = self.square_plan()
-        return 2 * self.n - 2 + sum(w for _, w in folds) + flags
+        return _square_wires(self.n, SQUARE_DEPTH) + sum(w + p for _, w, p in folds) + flags
 
-    def square_into(self, C, y, z, pool):
-        """z ^= y^2 mod q for any n-bit y and clean z. pool is a clean register of
-        square_pool_size() wires, and it keeps the garbage for the reverse pass.
-        f only sets which shifts run, so a sparse f is cheap and a dense f is
-        merely slower."""
+    def square_into(self, C, y, pool):
+        """Leaves y^2 mod q in pool[:n] for any n-bit y, with pool clean on entry
+        and holding the garbage for the reverse pass. pool has square_pool_size()
+        wires. Each fold adds the high part into the low n bits in place, and f
+        only sets which shifts run, so a sparse f is cheap and a dense f is merely
+        slower."""
         n, f = self.n, (1 << self.n) - self.q
         folds, flags = self.square_plan()
         wires = iter(pool)
@@ -294,33 +336,25 @@ class Mod:
         def take(k):
             return [next(wires) for _ in range(k)]
 
-        high = take(2 * n - 2)
-        zeros = C.alloc(n)
-        _square_into(C, y, high, zeros[1:])
-        C.free(zeros[1:])
-        cur = [y[0], zeros[0]] + high
-        for h, width in folds:
-            low, top = cur[:n], cur[n:]
-            acc = take(width)
-            pad = C.alloc(width)
-            for i, w in enumerate(top):
-                C.cx(w, acc[i])
-            done = 1
-            for j in range(1, f.bit_length()):
+        cur = _square(C, y, take, SQUARE_DEPTH)
+        low, top = cur[:n], cur[n:]
+        for h, extra, apart in folds:
+            low = low[:n] + take(extra)
+            acc = take(apart) if apart else low
+            done = 0
+            for j in range(f.bit_length()):
                 if f >> j & 1:
                     done |= 1 << j
-                    span = (h * done).bit_length() - j
-                    add(C, (top + pad)[:span], acc[j:j + span])
-            add(C, (low + pad)[:width], acc)
-            C.free(pad)
-            cur = acc
+                    span = (h * done + (0 if apart else (1 << n) - 1)).bit_length() - j
+                    _add_short(C, top[:span], acc[j:j + span])
+            if apart:
+                _add_short(C, acc, low)
+            top = low[n:]
         for k, t in zip(reversed(range(flags)), take(flags)):
-            gt_const_into(C, self.q << k, cur, t)
+            gt_const_into(C, self.q << k, low, t)
             C.x(t)
-            add_const(C, cur, -(self.q << k), ctrl=t)
-        for a, b in zip(cur, z):
-            C.cx(a, b)
-        C.free(zeros[:1])
+            add_const(C, low, -(self.q << k), ctrl=t)
+        pool[:] = low[:n] + [w for w in pool if w not in set(low[:n])]
 
     def offset(self):
         """c = (2^n - q - 1)/2. Offset residues store x in [0, q) as x + c, which
