@@ -40,6 +40,8 @@ from qec.point_add import ControlledPointAdd
 
 MAX_WIRES = 4096
 MAX_UPLOAD_BYTES = 104_857_600
+BOARD_LIMITS = (("expanded ops charge", "charge", 21_696_718), ("records", "records", 10_000_000),
+                ("listed call wires", "listed_call_wires", 10_000_000), ("call depth", "depth", 32))
 T_PER_CCX = 7
 ALLOWED_GATES = {"X", "CX", "CCX", "SWAP"}
 REFERENCE = {"commit": "8ca9b0e", "sample_max_t": 50_465_989, "wires": 2311}
@@ -574,9 +576,40 @@ def i7_limits(run):
     return Result(FAIL if problems else PASS, "; ".join(problems) or note, evidence)
 
 
+def board_charge(doc):
+    """The live board's charge and structural counts. Calls and call wires count
+    over the expanded circuit, and a definition may call only earlier ones."""
+    done, records, listed = [], 0, 0
+
+    def body(operations):
+        nonlocal records, listed
+        total = {"ops": 0, "calls": 0, "call_wires": 0, "depth": 0}
+        for ins in operations:
+            records += 1
+            if "call" in ins:
+                callee = done[ins["call"]]
+                listed += len(ins["wires"])
+                for key in ("ops", "calls", "call_wires"):
+                    total[key] += callee[key]
+                total["calls"] += 1
+                total["call_wires"] += len(ins["wires"])
+                total["depth"] = max(total["depth"], callee["depth"] + 1)
+            else:
+                total["ops"] += 1
+        return total
+
+    for definition in doc.get("definitions", []):
+        done.append(body(definition["operations"]))
+    total = body(doc["operations"])
+    picoseconds = total["calls"] * 1_329_430 + total["call_wires"] * 17_360 + 918_090
+    return {**total, "charge": total["ops"] + -(-picoseconds // 20_710), "records": records, "listed_call_wires": listed}
+
+
 def i7_charge(run):
-    return Result(PENDING, "needs the published benchmark: its charge formula is not public yet",
-                  {"reason": "needs the published benchmark", "limit_as_reported": 33_610_176, "this_repo_as_reported": 19_492_771})
+    got = board_charge(json.loads(run.emitted("secp256k1_G.hier").path.read_text()))
+    problems = [f"{name} {got[key]:,} over {limit:,}" for name, key, limit in BOARD_LIMITS if got[key] > limit]
+    note = f"charge {got['charge']:,} of {BOARD_LIMITS[0][2]:,} at G, {got['records']:,} records, {got['listed_call_wires']:,} listed call wires, call depth {got['depth']}"
+    return Result(FAIL if problems else PASS, "; ".join(problems) or note, {**got, "limits": {k: v for _, k, v in BOARD_LIMITS}, "problems": problems})
 
 
 def r1_hygiene(run):
@@ -613,7 +646,7 @@ CHECKS = (
     Check("I5", "addend independence of definitions", i5_addend_independence, EMIT_JOBS),
     Check("I6", "cost at G and sample statistics over addends (report)", i6_cost, ("secp-hier", "secp-flat") + EMIT_JOBS),
     Check("I7", "limits: wires and hierarchical upload", i7_limits, EMIT_JOBS),
-    Check("I7.charge", "limits: benchmark charge", i7_charge),
+    Check("I7.charge", "limits: the live board's charge at G", i7_charge, ("emit:secp256k1_G.hier",)),
     Check("R1", "run hygiene: no tracked or unignored file changed", r1_hygiene),
 )
 
