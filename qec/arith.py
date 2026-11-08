@@ -161,6 +161,51 @@ def gt_into_blocked(C, a, b, t, ctrl, sizes, zeros=(), dirty=()):
     C.free(fresh)
 
 
+def carries_blocked(C, a, b, outs, ctrl, sizes):
+    """outs[j] ^= ctrl*(carry out of the low blocks 0..j of b + a), a and b restored.
+
+    gt_into_blocked's construction, read at every block boundary instead of only the top: block 0
+    ripples with carry in 0, each higher block j ripples with carry in 0 and 1 and keeps both
+    carry outs v1, v2, and a ripple of MAJ(v1, v2, carry into j) over the blocks gives each
+    boundary's carry, which is read onto outs[j] right after its MAJ. The undo skips the reads.
+    outs[-1] gets the carry out of the whole word. Every wire but outs is restored."""
+    m = len(sizes)
+    assert len(outs) == m and sum(sizes) == len(a) == len(b) and min(sizes) > 0
+    assert ctrl not in (*a, *b, *outs)
+    fresh = C.alloc(2 * m - 1)
+    cins = [fresh[0]] + fresh[1:m]
+    gs = [None] + fresh[m:]
+    blocks, lo = [], 0
+    for s in sizes:
+        blocks.append((a[lo:lo + s], b[lo:lo + s]))
+        lo += s
+    tops = [a_j[-1] for a_j, _ in blocks]
+    for j in range(1, m):
+        _gt_up(C, cins[j], *blocks[j])
+        C.cx(tops[j], gs[j])
+        _gt_down(C, cins[j], *blocks[j])
+        C.x(cins[j])
+        _gt_up(C, cins[j], *blocks[j])
+    _gt_up(C, cins[0], *blocks[0])
+    _cx(C, ctrl, tops[0], outs[0])
+    carries = tops[:1] + gs[1:]
+    for j in range(1, m):
+        _maj(C, carries[j - 1], tops[j], gs[j])
+        _cx(C, ctrl, gs[j], outs[j])
+    for j in reversed(range(1, m)):
+        C.ccx(carries[j - 1], tops[j], gs[j])
+        C.cx(gs[j], carries[j - 1])
+        C.cx(gs[j], tops[j])
+    _gt_down(C, cins[0], *blocks[0])
+    for j in range(1, m):
+        _gt_down(C, cins[j], *blocks[j])
+        C.x(cins[j])
+        _gt_up(C, cins[j], *blocks[j])
+        C.cx(tops[j], gs[j])
+        _gt_down(C, cins[j], *blocks[j])
+    C.free(fresh)
+
+
 def load_const(C, reg, value, ctrl=None):
     for i, w in enumerate(reg):
         if value >> i & 1:

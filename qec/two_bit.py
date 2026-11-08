@@ -21,13 +21,17 @@ hold H's two top bits between the ticks, and nothing clean is held across them.
 from functools import lru_cache
 import heapq
 
-from .arith import Mod, _maj, _selected_carry, cswap, gt_into_blocked
+from .arith import Mod, _maj, _selected_carry, add, carries_blocked, crotate, cswap, gt_into_blocked
 
 
 # Copies of the A1 bit for the tick's last swap: the clean wires the tick's peak leaves there.
 FAN = 18
 # Blocks of the clear's compare.
 COMPARE_BLOCKS = 10
+# Blocks of the add in _add_or_shift, or 0 for the single ripple with the rolling XOR.
+ADD_BLOCKS = 16
+# Copies of J for the shift's rotation.
+ROTATE_COPIES = 8
 
 
 def _compare_blocks(w, m):
@@ -400,6 +404,8 @@ class TwoBitMod(Mod):
 
     def _add_or_shift(self, C, J, a, word):
         """On J, word = 2*word. Off J, word += a >> 1, through word's top two bits."""
+        if ADD_BLOCKS and self.n > 2:
+            return self._add_or_shift_blocked(C, J, a, word)
         n = self.n
         (cin, D, carry, t) = C.alloc(4)
         ops, tgt = a[1:], word[:n - 1]
@@ -435,6 +441,55 @@ class TwoBitMod(Mod):
             C.cx(c, D)
             C.cx(o, c)
         C.free([cin, D, carry, t])
+
+    def _add_or_shift_blocked(self, C, J, a, word):
+        """_add_or_shift's map with the add cut into blocks that add side by side.
+
+        Off J: the carry into every block of word[:n-1] + a[1:] is found at once by
+        carries_blocked under not J, each block then adds with its carry in, the carry out of the
+        top block increments word's top three bits, and the block carries are cleared by
+        carries_blocked again on (~sum + a[1:]), whose boundary carries are [a_low > sum_low], the
+        same carries. On J: word[0..n] rotates up one place, word[0] taking word[n], so a word
+        whose bit n is 0 doubles; word[n + 1] is left alone, as in the ripple."""
+        n = self.n
+        x, w = a[1:], word[:n - 1]
+        sizes = _compare_blocks(n - 1, ADD_BLOCKS)
+        m = len(sizes)
+        outs = C.alloc(m)
+        C.x(J)
+        carries_blocked(C, x, w, outs, J, sizes)
+        # Each block's add reads its own copy of not J, so the blocks do not queue on one control.
+        copies = [J] + C.alloc(m - 1)
+        fan = [(copies[j - (1 << (j.bit_length() - 1))], copies[j]) for j in range(1, m)]
+        for src, dst in fan:
+            C.cx(src, dst)
+        lo = 0
+        for j, size in enumerate(sizes):
+            add(C, x[lo:lo + size], w[lo:lo + size], ctrl=copies[j], cin=outs[j - 1] if j else None)
+            lo += size
+        for src, dst in reversed(fan):
+            C.cx(src, dst)
+        C.free(copies[1:])
+        c = outs[-1]
+        (t,) = C.alloc(1)
+        C.ccx(c, word[n - 1], t)
+        C.ccx(t, word[n], word[n + 1])
+        C.cx(t, word[n])
+        C.cx(c, word[n - 1])
+        C.x(word[n - 1])
+        C.ccx(c, word[n - 1], t)
+        C.x(word[n - 1])
+        C.free([t])
+        for y in w:
+            C.x(y)
+        carries_blocked(C, x, w, outs, J, sizes)
+        for y in w:
+            C.x(y)
+        C.x(J)
+        C.free(outs)
+        copies = C.alloc(ROTATE_COPIES - 1)
+        crotate(C, [J] + copies, word[n::-1])
+        C.free(copies)
 
     def tick(self, C, prev, g, nxt, a, s, pebble=False):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
