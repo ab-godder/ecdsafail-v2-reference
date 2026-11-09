@@ -493,3 +493,11 @@ After the initial flag CX gates, the c = 0 words are 0000, 0110 and 0101.
 None has f0 = 0 and f1 = 1, so f0 XOR f1 equals f0 AND NOT f1 on that domain.
 The recode toggles gen with NOT c AND (f0 XOR f1), temporarily forming and restoring the XOR.
 This uses one CCX without a temporary, saving eight CCX across the four recodes.
+
+## Kept bottom carry for bit one
+
+This branch builds on ab-godder's `mike/comp-ab-godder-pr9-286e36a3ba9f` (`lowt-mike` at `db9ae43`) and adds one edit, in `qec/two_bit.py`.
+`_chain_down` now takes `keep = 1` from the add's second chain, so that chain's bottom carry c1 = l0 AND k0 stays built past the compare instead of being cleared.
+On a held lane l0 = R0, so c1 is the k0 AND R0 term of bit one, and bit one reads it from c1 instead of computing and uncomputing it on a fresh wire around its use.
+c1 is cleared with one CCX, l0 AND k0, after the B1 drop and before k0 changes, and its wire is freed.
+Every tick call with a previous cell saves 2 CCX, 764 of the 766 calls at secp256k1, so the circuit at G loses 1,528 CCX at the same 3,135 wires.

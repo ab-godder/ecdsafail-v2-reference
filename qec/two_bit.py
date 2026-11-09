@@ -269,7 +269,8 @@ class TwoBitMod(Mod):
             rise(i)
         return chain
 
-    def _chain_down(self, C, L, selectors, masks, M, perch, chain, drop, write, take=None):
+    def _chain_down(self, C, L, selectors, masks, M, perch, chain, drop, write, take=None, keep=0):
+        """keep = 1 leaves the bottom carry chain[1] built, for the caller to clear."""
         a, b, w = *self.run, self.window
 
         def fall(i):
@@ -297,7 +298,7 @@ class TwoBitMod(Mod):
             if write:
                 M.restore()
                 M.write(chain[a])
-        for i in reversed(range(a)):
+        for i in reversed(range(keep, a)):
             if i not in chain:
                 start = max(j for j in chain if j < i)
                 for j in range(start + 1, i + 1):
@@ -520,7 +521,9 @@ class TwoBitMod(Mod):
             C.cx(chain[w], e)
         C.free([e])
         P.write(chain[w])
-        self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True, alloc)
+        # The bottom carry c1 = l0*k0 stays: on a held lane l0 = R0, so it is the k0*R0 that bit one reads.
+        self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True, alloc, keep=1)
+        c1 = chain[1]
         C.ccx(k0, k1, one)
         C.free([one])
 
@@ -540,20 +543,19 @@ class TwoBitMod(Mod):
         mark_even(z)
         C.free([z])
         if p is not None:
-            # S = R + k*f mod 4 names k's bit 1, which now sits on k2.
+            # S = R + k*f mod 4 names k's bit 1, which now sits on k2. c1 holds its k0*R0 term.
             def bit_one(m):
-                C.ccx(k0, a[0], m)
                 C.cx(low[1], m)
                 C.cx(a[1], m)
                 if f >> 1 & 1:
                     C.cx(k0, m)
 
-            (m,) = C.alloc(1)
-            bit_one(m)
-            C.ccx(p, m, k2)
-            bit_one(m)
-            C.free([m])
+            bit_one(c1)
+            C.ccx(p, c1, k2)
+            bit_one(c1)
         self._drop_after_b1(C, prev, p)
+        C.ccx(l0, k0, c1)
+        C.free([c1])
         C.cx(sw, b)
         C.ccx(b, low[1], k1)
         if f >> 1 & 1:
