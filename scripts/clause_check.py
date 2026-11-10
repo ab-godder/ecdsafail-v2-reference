@@ -23,11 +23,11 @@ def pair(w, next_w):
     mod = Mod(Q)
     m = DialogMultiplier(C, mod)
     U, V, E = C.alloc(mod.n), C.alloc(w), C.alloc(1)
-    a, b = C.alloc(2), C.alloc(2)
+    a, b = C.alloc(3), C.alloc(3)
     inputs = U[:w] + list(V) + E
-    C.apply(m._euclid_step(w), [U, V, E, a])
+    C.apply(m._euclid_step(w), [U[:w], V, E, a])
     Vn = V[:next_w]
-    C.apply(m._euclid_step(next_w), [U, Vn, E, b])
+    C.apply(m._euclid_step(next_w), [U[:next_w], Vn, E, b])
     lanes = 1 << len(inputs)
     init = sim.pack(list(range(lanes)), inputs)
     state = sim.run(C.ops, C.num_wires, init, lanes)

@@ -42,11 +42,11 @@ def build(q):
 
     def record(block, regs, inverse=False):
         apply(block, regs, inverse)
-        if len(regs) == 4 and len(regs[3]) == 2:
-            steps.append((len(C.ops), list(regs[3])))
+        if len(regs) == 4 and len(regs[3]) == 3:
+            steps.append((len(C.ops), list(regs[3][:2])))
 
     C.apply = record
-    m._euclid_pass(U, pool)
+    m._euclid_pass(U, pool, C.alloc(m.iters))
     C.apply = apply
     return C, m, U0, V0, steps
 

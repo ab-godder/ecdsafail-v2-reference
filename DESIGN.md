@@ -501,3 +501,17 @@ This branch builds on ab-godder's `mike/comp-ab-godder-pr9-286e36a3ba9f` (`lowt-
 On a held lane l0 = R0, so c1 is the k0 AND R0 term of bit one, and bit one reads it from c1 instead of computing and uncomputing it on a fresh wire around its use.
 c1 is cleared with one CCX, l0 AND k0, after the B1 drop and before k0 changes, and its wire is freed.
 Every tick call with a previous cell saves 2 CCX, 764 of the 766 calls at secp256k1, so the circuit at G loses 1,528 CCX at the same 3,135 wires.
+
+## Held offsets beside the tape
+
+Each Euclid cell now has a third wire, held, zero on entry; the pass takes them as a register of `iters` wires and only the inverse pass clears them.
+A tick computes two = NOT g0 AND NOT (V0 XOR E) onto held, clears V0 under it and strips on it as before.
+Then b ^= held makes b = s XOR two, which is s on a subtract cell and two otherwise, since s implies g0 and two implies NOT g0.
+held ^= b leaves held = s, and cswap(g0, E, held) moves the old offset e onto held and s onto E on a subtract cell; on a no-subtract cell s = 0, so held is 0 and E keeps e.
+So E follows E2's recurrence unchanged, held ends as g0 AND e, and each subtract cell already carries its own swap: the tape after the ticks is the offset-swept tape of E4, and the offset sweep is gone; the B1 sweep is unchanged, because it reads only g0 and the b of no-subtract cells, which are the same.
+E ends zero by E3, as before.
+Tick 0 has e = 0 and s = g0 (U = q > v), so it uses no held wire and ends with b ^= g0.
+The last tick maps (1, 0, 0), (1, 1, 0), (1, 0, 1) to cell (V0 XOR E, NOT g0), held = E, and zero V and E, by CX.
+The inverse pass is the recorded block reversed on the same held register, so held returns to zero; M frees it after that pass.
+Per tick this drops the CCX that cleared the old two wire, and per pass the 382 offset-sweep CCX; at G the circuit loses 3,056 CCX for 384 held wires, which live inside the multiplier, below the square's 3,135-wire peak.
+`scripts/model_check.py` compares held with the swap of the last subtract before each subtract cell, from the semantic tape.

@@ -236,20 +236,19 @@ class DialogMultiplier:
             C = self.C
 
             def step(U, V, E, cell):
-                g0, b = cell
+                g0, b, held = cell
                 offset = E[0]
                 if last:
-                    # The input is (1, 0, 0), (1, 1, 0) or (1, 0, 1), and the cell becomes
-                    # (V0 ^ E, NOT V0): only V[0], E and the cell change, all by CX.
+                    # The input is (1, 0, 0), (1, 1, 0) or (1, 0, 1). The cell becomes
+                    # (V0 ^ E, NOT g0) with held = E, and V and E end zero: all by CX.
                     C.cx(V[0], g0)
                     C.cx(offset, g0)
+                    C.cx(g0, V[0])
+                    C.cx(offset, V[0])
+                    C.cx(g0, b)
                     C.x(b)
-                    C.cx(V[0], b)
-                    C.cx(b, V[0])
-                    C.x(V[0])
-                    C.cx(g0, offset)
-                    C.cx(b, offset)
-                    C.x(offset)
+                    C.cx(offset, held)
+                    C.cx(held, offset)
                     V[:] = V[1:] + V[:1]
                     return
                 top = None
@@ -259,27 +258,25 @@ class DialogMultiplier:
                 C.cx(V[0], g0)
                 self._shared_difference(U[:w], V[:w], g0, b, top)
                 V[:] = V[1:] + V[:1]
-                # A subtract keeps its swap on E and moves the old offset to the cell.
-                cswap(C, g0, [offset], [b])
-                # A no-subtract tick strips a second bit when V + E is even.
-                (two,) = C.alloc(1)
+                # A no-subtract tick strips a second bit when V + E is even. held, zero on
+                # entry, is the strip's control: two = NOT g0 AND NOT (V0 ^ E), E still e.
                 C.cx(offset, V[0])
                 C.x(g0)
                 C.x(V[0])
-                C.ccx(g0, V[0], two)
+                C.ccx(g0, V[0], held)
                 C.x(V[0])
                 C.x(g0)
                 C.cx(offset, V[0])
-                C.cx(two, b)
-                C.ccx(two, offset, V[0])
+                C.ccx(held, offset, V[0])
                 for i in range(w - 3 if top_clear else w - 2):
-                    cswap(C, two, [V[i]], [V[i + 1]])
-                C.x(g0)
-                C.ccx(g0, b, two)
-                C.x(g0)
-                C.free([two])
+                    cswap(C, held, [V[i]], [V[i + 1]])
+                # b = s ^ two, the cell's swept bit; then held = s, as two ^ (s ^ two).
+                C.cx(held, b)
+                C.cx(b, held)
+                # A subtract keeps its swap s on E and holds the old offset e beside the cell.
+                cswap(C, g0, [offset], [held])
 
-            self._euclid_steps[key] = C.record_shape(step, [w, w, 1, 2])
+            self._euclid_steps[key] = C.record_shape(step, [w, w, 1, 3])
         return self._euclid_steps[key]
 
     def _euclid_tick0(self):
@@ -321,15 +318,20 @@ class DialogMultiplier:
                 C.x(g0)
                 for i in range(n - 2):
                     cswap(C, b, [V[i]], [V[i + 1]])
+                # The cell's swept bit s ^ two, with s = g0 since U = q > v; e = 0 needs no held.
+                C.cx(g0, b)
 
             self._euclid_tick0_block = C.record_shape(step, [n, n, 1, 2, k])
         return self._euclid_tick0_block
 
-    def _euclid_pass(self, U: list[int], pool: list[int], block0_raw: bool = False) -> None:
+    def _euclid_pass(self, U: list[int], pool: list[int], held: list[int],
+                     block0_raw: bool = False) -> None:
         # The pool starts as V plus clean external tape. It ends as the zero wires U did not
         # take back, then tape; U ends as its low wires and those zero wires. The boundary is a
-        # permutation of U and the pool together.
+        # permutation of U and the pool together. held, iters wires, starts zero and ends with
+        # each subtract cell's old offset, zero elsewhere; only the inverse pass clears it.
         n = self.mod.n
+        assert len(held) == self.iters
         V, available, G = pool[:n], pool[n:], []
         lend = U[n - self.u_lent:]
         E = self.C.alloc(1)
@@ -348,8 +350,9 @@ class DialogMultiplier:
                 # E7: the next tick's U fits its width. E3: the last tick ends at (1, 0, 0).
                 last = i == self.iters - 1
                 narrow = not last and self.widths[i + 1] == w - 1
+                cell = cell + held[i:i + 1]
                 self.C.apply(self._euclid_step(w, top_clear, narrow, last), [U[:w], V, E, cell])
-            G.extend(cell)
+            G.extend(cell[:2])
             next_width = self.widths[i + 1] if i + 1 < self.iters else self.pass_tail_width
             assert w - 1 <= next_width <= w
             available.extend(V[next_width:])
@@ -358,9 +361,9 @@ class DialogMultiplier:
             # w <= next_width, so U's wires from next_width up are zero for the rest of the pass.
             available.extend(reversed([u for u in U[next_width:w] if u in lend]))
         assert len(V) == self.pass_tail_width and not available
-        # Sweep down, coding each block as it finishes. The offset sweep leaves b on a
-        # no-subtract tick alone. On the merged path the B1 sweep follows one cell behind it,
-        # so a block is coded only after the B1 step that reads its bottom cell.
+        # Each tick leaves its own swap on a subtract cell's b, so only the B1 sweep is left.
+        # Sweep down, coding each block as it finishes, once the B1 step that reads its
+        # bottom cell has run.
         T, swept, clean = self.iters, self.swept, []
         both = None
 
@@ -372,25 +375,14 @@ class DialogMultiplier:
             self.C.x(G[2 * k])
 
         # The pass reaches (1, 0) within T ticks: its last subtract leaves E = 0, and each
-        # no-subtract cell after it has b = 1. So at cell T - 1, g0 = 0 implies E ^ b = 1, and
-        # when cells T - 1 and T - 2 are both no-subtract their b are equal: the B1 step between
-        # them never swaps, and mark(T - 2) is made at once. Cell 0 is tick 0 on U = q > x, where
-        # a subtract always swaps, so there g0 = 1 implies E ^ b = 1.
+        # no-subtract cell after it has b = 1. So when cells T - 1 and T - 2 are both
+        # no-subtract their b are equal: the B1 step between them never swaps, and mark(T - 2)
+        # is made at once.
         late = swept and T >= 3
         if swept and T >= 2:
             (both,) = self.C.alloc(1)
             mark(T - 2 if late else T - 1)
         for i in range(T - 1, -1, -1):
-            g0, b = G[2 * i], G[2 * i + 1]
-            if i == 0 or i == T - 1:
-                self.C.cx(b, E[0])
-                self.C.cx(g0, b)
-                if i:
-                    self.C.cx(E[0], b)
-                    self.C.x(b)
-                self.C.cx(b, E[0])
-            else:
-                cswap(self.C, g0, E, [b])
             if swept and i + 1 < T and not (late and i == T - 2):
                 k = i + 1
                 self._b1_step(G, k, both)
@@ -552,7 +544,8 @@ class DialogMultiplier:
         # On the merged path block 0 stays decoded from Bezout's end into the inverse pass, so
         # the pass is recorded without its last encode, which runs here instead.
         raw0 = self.swept and self.blocks > 0
-        E = C.run(lambda U, pool: self._euclid_pass(U, pool, raw0), [U, pool])
+        held = C.alloc(T)
+        E = C.run(lambda U, pool, held: self._euclid_pass(U, pool, held, raw0), [U, pool, held])
         if raw0:
             self._code_block0(U, pool)
         lent = self.lent_after_pass
@@ -578,7 +571,8 @@ class DialogMultiplier:
             C.free([reg[i] for reg, i in places])
             for (reg, i), w in zip(places, raw):
                 reg[i] = w
-        C.apply(E, [Yr, pool], inverse=True)
+        C.apply(E, [Yr, pool, held], inverse=True)
+        C.free(held)
         load_const(C, Yr, q)
         Xr[:] = pool[:n]
         C.free(Yr + pool[n:])

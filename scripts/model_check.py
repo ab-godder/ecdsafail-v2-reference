@@ -79,7 +79,8 @@ def _pass_bad(q, xs, iters):
     inputs = list(V)
     pool = V + C.alloc(m.tape_external)
     load_const(C, U, q)
-    m._euclid_pass(U, pool)
+    held = C.alloc(m.iters)
+    m._euclid_pass(U, pool, held)
     G = m.coded_tape(pool)
     for j in range(m.blocks):
         m._decode(G, j, C.alloc(len(m._block_free(j, m.swept))), m.swept)
@@ -93,10 +94,21 @@ def _pass_bad(q, xs, iters):
         cells = [b1_swept(c) for c in cells]
     tapes = [sum((add + 2 * bit) << (2 * i) for i, (add, bit) in enumerate(c)) for c in cells]
     want = sim.pack([q if x == 0 else 1 for x in xs], U) | sim.pack(tapes, G)
+    want |= sim.pack([held_offsets(tick_tape(q, x, m.iters)[2]) for x in xs], held)
     bad = 0
     for w, actual in enumerate(state):
         bad |= actual ^ want.get(w, 0)
     return bad.bit_count()
+
+
+def held_offsets(tape):
+    """Bit i is a subtract cell's preceding offset: the swap of the last subtract before it."""
+    out, e = 0, 0
+    for i, (add, bit) in enumerate(tape):
+        if add:
+            out |= e << i
+            e = bit
+    return out
 
 
 def gate_pass(q: int, iters: int | None = None) -> int:

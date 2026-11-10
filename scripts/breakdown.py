@@ -30,7 +30,7 @@ def euclid_only(C, X, Y):
     U = C.alloc(n)
     load_const(C, U, mod.q)
     pool = list(X) + C.alloc(M.tape_external)
-    M._euclid_pass(U, pool)
+    M._euclid_pass(U, pool, C.alloc(M.iters))
 
 
 def bezout_only(C, Y, S, G):
