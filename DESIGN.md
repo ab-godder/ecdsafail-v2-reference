@@ -515,3 +515,15 @@ The last tick maps (1, 0, 0), (1, 1, 0), (1, 0, 1) to cell (V0 XOR E, NOT g0), h
 The inverse pass is the recorded block reversed on the same held register, so held returns to zero; M frees it after that pass.
 Per tick this drops the CCX that cleared the old two wire, and per pass the 382 offset-sweep CCX; at G the circuit loses 3,056 CCX for 384 held wires, which live inside the multiplier, below the square's 3,135-wire peak.
 `scripts/model_check.py` compares held with the swap of the last subtract before each subtract cell, from the semantic tape.
+
+## Carries kept for the inverse pass
+
+A Euclid step's chain may build each carry c_(i+1) = a ^ (a ^ b)(a ^ c) on a fresh zero wire with one CCX, restoring a, b and c, instead of the in-place majority.
+U[i] then still holds a_i on the way down, so each bit's descent is the g0 select of S_i and the g1 exchange, two CCX instead of three; bit 0 and the top bit are as before, the top bit reading c_(w-1) from its kept wire.
+The step's U, V, E and cell outputs are the same functions of its input as before; the kept wires end holding the carries of a + NOT(vhat) on that input, so the forward pass's extra output is a function of its input.
+The multiplier allocates these wires zero beside held, the Bezout pass never touches them, and the inverse pass, the recorded block reversed on the same wires, clears them, so M returns them zero.
+Each kept carry saves one CCX in each of the four passes.
+`KEEP` bounds the kept wires; the plan keeps every chain carry of narrow ticks, from the last tick back, while the total fits, and never at full width.
+At G, KEEP = 1480 keeps 1,431 carries, ticks of width 55 down to 3, and the circuit loses 5,724 CCX at the same 3,135 wires: the multiplier's peak stays below the square's.
+Past that the peak grows one wire per kept carry, at about 3.8 CCX saved per wire, until the 4,096-wire cap near KEEP = 2,450 (KEEP = 2400 measured 4,041 wires and 3,193,587 CCX).
+Toy instances keep every narrow tick, so the exhaustive gate checks cover the kept step; `model_check.py`'s pass rows cover the unkept one.

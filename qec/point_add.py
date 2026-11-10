@@ -18,6 +18,8 @@ class DialogMultiplier:
     # code call below is gated on blocks or tail, and each encode was paired with a decode that
     # nothing between reads past, so the passes are the same maps on the same states.
     RAW_TAPE = True
+    # Carries the forward pass keeps for the inverse pass to clear, each saving one CCX per pass.
+    KEEP = 1480
 
     def __init__(self, C, mod):
         self.C, self.mod = C, mod
@@ -129,9 +131,12 @@ class DialogMultiplier:
                      [self._block_wires(G, j, swept)], inverse=True)
 
 
-    def _shared_difference(self, U, V, g0, g1, top=None):
+    def _shared_difference(self, U, V, g0, g1, top=None, kept=None):
         """Compare and form the even difference using one majority chain. With top set, bit w - 1
-        is done by _top_bit on the domain that mode names."""
+        is done by _top_bit on the domain that mode names. With kept, the chain's carries go onto
+        those zero wires instead and stay there, which the inverse pass clears."""
+        if kept is not None:
+            return self._kept_difference(U, V, g0, g1, top, kept)
         C = self.C
         (cin,) = C.alloc(1)
         carries = [cin] + U[:-1]
@@ -166,6 +171,55 @@ class DialogMultiplier:
                 C.ccx(g1, V[i], U[i])
             C.x(V[i])
             C.cx(carries[i], V[i])
+        C.free([cin])
+        for wire in V:
+            C.x(wire)
+        for wire in V[1:]:
+            C.cx(g1, wire)
+
+    def _kept_difference(self, U, V, g0, g1, top, kept):
+        """_shared_difference with c_(i+1) built on kept[i - 1] by one CCX and never cleared, so
+        U[i] keeps a_i and each bit's descent is the select and the exchange alone. Bit 0 is as
+        there: U[0] holds c_1 = NOT g0 until its descent restores a_0 = 1. The returned carries
+        are those of a + NOT(vhat) on the step's input, a function of that input."""
+        C = self.C
+        chain = len(U) if top is None else len(U) - 1
+        assert len(kept) == chain - 1
+        carry = [None, U[0]] + list(kept)
+        (cin,) = C.alloc(1)
+        for wire in V:
+            C.x(wire)
+        C.cx(U[0], V[0])
+        C.cx(U[0], cin)
+        C.cx(V[0], U[0])
+        for i in range(1, chain):
+            # c_(i+1) = a ^ (a ^ b)(a ^ c), with a, b and c restored.
+            C.cx(U[i], V[i])
+            C.cx(U[i], carry[i])
+            C.ccx(carry[i], V[i], carry[i + 1])
+            C.cx(U[i], carry[i + 1])
+            C.cx(U[i], carry[i])
+            C.cx(U[i], V[i])
+        if top is None:
+            C.ccx(g0, carry[chain], g1)
+        else:
+            self._top_bit(C, top, g0, U[-1], V[-1], carry[chain], g1)
+        for i in reversed(range(1, chain)):
+            # B[i] = b ^ g0*(a ^ c), S_i when g0 = 1; then a_i ^= g1 * NOT(S_i ^ c_i).
+            C.cx(U[i], carry[i])
+            C.ccx(g0, carry[i], V[i])
+            C.cx(U[i], carry[i])
+            C.cx(carry[i], V[i])
+            C.x(V[i])
+            C.ccx(g1, V[i], U[i])
+            C.x(V[i])
+            C.cx(carry[i], V[i])
+        C.cx(V[0], U[0])
+        C.cx(g0, V[0])
+        C.cx(U[0], cin)
+        C.cx(U[0], V[0])
+        C.cx(cin, V[0])
+        C.cx(cin, V[0])
         C.free([cin])
         for wire in V:
             C.x(wire)
@@ -224,18 +278,43 @@ class DialogMultiplier:
         else:
             raise ValueError(mode)
 
-    def _euclid_step(self, w: int, top_clear: bool = False, narrow: bool = False, last: bool = False):
+    @staticmethod
+    def _kept_count(w, top_clear, narrow, last):
+        """Carries a step builds on kept wires: one per chain bit above bit 0."""
+        if last:
+            return 0
+        top = w >= 2 and (top_clear or narrow)
+        return (w - 1 if top else w) - 1
+
+    def kept_plan(self):
+        """Per tick, how many carries it keeps: narrow ticks from the last back, within KEEP."""
+        plan, total = [0] * self.iters, 0
+        for i in reversed(range(1, self.iters)):
+            w = self.widths[i]
+            if w == self.mod.n:
+                break
+            top_clear = w >= 3 and self.widths[i - 1] == w
+            last = i == self.iters - 1
+            narrow = not last and self.widths[i + 1] == w - 1
+            k = self._kept_count(w, top_clear, narrow, last)
+            if total + k > self.KEEP:
+                break
+            plan[i], total = k, total + k
+        return plan
+
+    def _euclid_step(self, w: int, top_clear: bool = False, narrow: bool = False, last: bool = False,
+                     keep: bool = False):
         """top_clear: the tick before ran at the same width, so V is below 2^(w - 1) on entry
         and the second strip's last swap, of two zero bits, never fires.
         narrow: the next width is w - 1, so by E7 this step leaves U below 2^(w - 1).
         last: the pass's last tick, whose input reaches (U, V, E) = (1, 0, 0) by E3."""
         if last:
-            top_clear = narrow = False
-        key = (w, top_clear, narrow, last)
+            top_clear = narrow = keep = False
+        key = (w, top_clear, narrow, last, keep)
         if key not in self._euclid_steps:
             C = self.C
 
-            def step(U, V, E, cell):
+            def step(U, V, E, cell, *kept):
                 g0, b, held = cell
                 offset = E[0]
                 if last:
@@ -256,7 +335,7 @@ class DialogMultiplier:
                     top = "both" if top_clear and narrow else "top_clear" if top_clear else "narrow"
                 C.cx(offset, V[0])
                 C.cx(V[0], g0)
-                self._shared_difference(U[:w], V[:w], g0, b, top)
+                self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if keep else None)
                 V[:] = V[1:] + V[:1]
                 # A no-subtract tick strips a second bit when V + E is even. held, zero on
                 # entry, is the strip's control: two = NOT g0 AND NOT (V0 ^ E), E still e.
@@ -276,7 +355,8 @@ class DialogMultiplier:
                 # A subtract keeps its swap s on E and holds the old offset e beside the cell.
                 cswap(C, g0, [offset], [held])
 
-            self._euclid_steps[key] = C.record_shape(step, [w, w, 1, 3])
+            sizes = [w, w, 1, 3] + ([self._kept_count(w, top_clear, narrow, last)] if keep else [])
+            self._euclid_steps[key] = C.record_shape(step, sizes)
         return self._euclid_steps[key]
 
     def _euclid_tick0(self):
@@ -325,13 +405,16 @@ class DialogMultiplier:
         return self._euclid_tick0_block
 
     def _euclid_pass(self, U: list[int], pool: list[int], held: list[int],
-                     block0_raw: bool = False) -> None:
+                     block0_raw: bool = False, kept: list[int] | None = None) -> None:
         # The pool starts as V plus clean external tape. It ends as the zero wires U did not
         # take back, then tape; U ends as its low wires and those zero wires. The boundary is a
         # permutation of U and the pool together. held, iters wires, starts zero and ends with
         # each subtract cell's old offset, zero elsewhere; only the inverse pass clears it.
         n = self.mod.n
         assert len(held) == self.iters
+        plan = self.kept_plan() if kept is not None else [0] * self.iters
+        assert kept is None or len(kept) == sum(plan)
+        at = 0
         V, available, G = pool[:n], pool[n:], []
         lend = U[n - self.u_lent:]
         E = self.C.alloc(1)
@@ -351,7 +434,12 @@ class DialogMultiplier:
                 last = i == self.iters - 1
                 narrow = not last and self.widths[i + 1] == w - 1
                 cell = cell + held[i:i + 1]
-                self.C.apply(self._euclid_step(w, top_clear, narrow, last), [U[:w], V, E, cell])
+                regs = [U[:w], V, E, cell]
+                if plan[i]:
+                    assert plan[i] == self._kept_count(w, top_clear, narrow, last)
+                    regs.append(kept[at:at + plan[i]])
+                    at += plan[i]
+                self.C.apply(self._euclid_step(w, top_clear, narrow, last, plan[i] > 0), regs)
             G.extend(cell[:2])
             next_width = self.widths[i + 1] if i + 1 < self.iters else self.pass_tail_width
             assert w - 1 <= next_width <= w
@@ -545,7 +633,9 @@ class DialogMultiplier:
         # the pass is recorded without its last encode, which runs here instead.
         raw0 = self.swept and self.blocks > 0
         held = C.alloc(T)
-        E = C.run(lambda U, pool, held: self._euclid_pass(U, pool, held, raw0), [U, pool, held])
+        kept = C.alloc(sum(self.kept_plan()))
+        E = C.run(lambda U, pool, held, kept: self._euclid_pass(U, pool, held, raw0, kept),
+                  [U, pool, held, kept])
         if raw0:
             self._code_block0(U, pool)
         lent = self.lent_after_pass
@@ -571,8 +661,8 @@ class DialogMultiplier:
             C.free([reg[i] for reg, i in places])
             for (reg, i), w in zip(places, raw):
                 reg[i] = w
-        C.apply(E, [Yr, pool, held], inverse=True)
-        C.free(held)
+        C.apply(E, [Yr, pool, held, kept], inverse=True)
+        C.free(held + kept)
         load_const(C, Yr, q)
         Xr[:] = pool[:n]
         C.free(Yr + pool[n:])
