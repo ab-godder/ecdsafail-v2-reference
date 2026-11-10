@@ -536,3 +536,16 @@ That is 3 CCX per tick with a previous and a next cell, for +2 clean wires at th
 The first chain's bottom carry l0·(one ⊕ K0) sits on a clean wire and survives its fall; after k = K + e, `cx(l0, c1)` and `ccx(l0, e, c1)` make it the second chain's l0·k0, since l0 = 1 implies one = 1.
 That is 1 CCX per tick for +1 clean wire during the first chain.
 Together they take G from 3,206,027 to 3,202,969 CCX at 3,135 wires.
+
+## Square wire trades
+
+At secp256k1 the square, not the multiplier, sets the peak: M peaks at 1,312 wires, and the square's junk sits beside the 516 live wires.
+Four changes in `qec/square.py` spend the square's room up to the 4,096-wire cap.
+
+- **Lent product ancillas.** E, T, t, c, k and the increment carries are first written after the Karatsuba product, so its ancillas take them first. The root's add onto its upper half pads V with 127 zero wires. The peak falls from 3,135 to 3,048 at the same gates.
+- **Kept increments.** The fold's two increments above its low window keep their carries on n - m - 1 and n - b - 1 junk wires, at 1 CCX a bit in place of a Prefix's 3. The square's reverse clears them like any other junk fixed by Y. That is 412 wires for 1,648 CCX, 4 CCX a wire.
+- **Zero product tops.** R(x) <= 2^(2ws - 2) and T(x) < 2^(2ws - 2), and nothing writes above V after the S child, so the top one or two wires of each S child's output hold 0 from then to the square's end. The fold and the gen-controlled modadd borrow those 14 wires, and the modadd's fresh scratch falls from 41 to 27.
+- **Kept leaf carries.** KEEP = 650 junk wires hold the leaves' inner row carries, 2 CCX a wire across the square and its reverse, capped at the carries the leaves have. One KEEP wire is one peak wire, so KEEP is the knob that takes up any slack below the cap.
+
+At G: 3,206,027 -> 3,203,079 CCX (-2,948), 3,135 -> 4,096 wires.
+`scripts/square_check.py` checks X -= gen*Y^2 mod q, with gen and Y kept and every other wire zero, through the square, the modadd and the reverse. It runs every (gen, Y, X) at n = 4 to 8, every Y at 10 to 14, and samples at 24 to 48 and at secp256k1, over KEEP values from none to all.
