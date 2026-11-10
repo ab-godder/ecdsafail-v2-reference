@@ -211,7 +211,7 @@ def _unfan(C, src, copies):
     _emit(C, reversed(g.ops))
 
 
-def shared_difference_u6(C, U, V, g0, g1, ring):
+def shared_difference_u6(C, U, V, g0, g1, ring, peek=None, off=None):
     """The step's shared difference with its down-sweep as the up-sweep run backwards.
     On the step's domain (U odd, so a_0 = 1; g0 = V[0]; g1 = 0), with b' = ~b and s = a + b'
     mod 2^w, the tree's unwind leaves (a, b) if g0 = 0, (a, ~s) if g0 and not g1, and (~b', s)
@@ -240,7 +240,22 @@ def shared_difference_u6(C, U, V, g0, g1, ring):
     up.cx(U[0], cin)
     adjacent_xor(up, U)
     lookahead_sweep(up, [cin] + list(U), [None] + list(V), list(ring))
-    _emit(C, up.ops)
+    if off is None:
+        _emit(C, up.ops)
+    else:
+        # V[0] takes the held offset here rather than before: the XOR commutes with the X and the
+        # CX on V[0] ahead of it, and no gate reads V[0] in between.
+        _emit(C, up.ops[:w])
+        C.cx(off, V[0])
+        _emit(C, up.ops[w:])
+    if peek is not None:
+        # peek holds ~(b_1 ^ off), with b_1 V[1]'s input. Now V[1] = p_1 = a_1 ^ ~b_1 and
+        # U[0] = c_1 ^ a_1 with c_1 = a_0 b'_0 = ~g0 (a_0 = 1), so these XORs clear it.
+        C.cx(V[1], peek)
+        C.cx(U[0], peek)
+        C.cx(g0, peek)
+        C.cx(off, peek)
+        C.x(peek)
     _fan(C, g0, G0)
     C.ccx(g0, U[-1], g1)
     _fan(C, g1, G1)
@@ -454,7 +469,10 @@ class DialogMultiplier:
         self.C.apply(self._encoder(j, swept),
                      [self._block_wires(G, j, swept)], inverse=True)
 
-    def _shared_difference(self, U, V, g0, g1, ring_wires=()):
+    def _shared_difference(self, U, V, g0, g1, ring_wires=(), peek=None, off=None):
+        if peek is not None:
+            shared_difference_u6(self.C, U, V, g0, g1, list(ring_wires), peek, off)
+            return
         if len(U) <= RIPPLE_MAX_W:
             shared_difference_ripple(self.C, U, V, g0, g1, list(ring_wires))
             return
@@ -508,19 +526,23 @@ class DialogMultiplier:
                 # The step below with TWO_EARLY: TT is `two` and its copies, all clean.
                 g0, b = cell
                 offset = E[0]
-                C.cx(offset, V[0])
-                C.cx(V[0], g0)
                 two, tw = TT[0], list(TT[1:])
-                C.cx(offset, V[1])
+                # g0 = V[0] ^ offset; the shared difference XORs the offset into V[0] itself. V[1] is
+                # read through a copy holding ~(b_1 ^ offset), which the shared difference clears,
+                # so neither waits for the CCX below or for the offset.
+                (peek,) = C.alloc(1)
+                C.cx(V[0], g0)
+                C.cx(V[1], peek)
+                C.cx(offset, g0)
+                C.cx(offset, peek)
+                C.x(peek)
                 C.x(g0)
-                C.x(V[1])
-                C.ccx(g0, V[1], two)
-                C.x(V[1])
+                C.ccx(g0, peek, two)
                 C.x(g0)
-                C.cx(offset, V[1])
                 L = w - 1
                 _fanout(C, two, tw)
-                self._shared_difference(U[:w], V[:w], g0, b, list(cp))
+                self._shared_difference(U[:w], V[:w], g0, b, list(cp), peek, offset)
+                C.free([peek])
                 V[:] = V[1:] + V[:1]
                 cswap(C, g0, [offset], [b])
                 ctl = [two] + tw
