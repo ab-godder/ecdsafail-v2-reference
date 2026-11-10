@@ -45,6 +45,19 @@ def _keep_add(C, a, b, cout, K):
         c = t
 
 
+def _kept_inc(C, bits, t, K, cout=None):
+    """bits += t mod 2^len(bits), cout ^= the carry out. The carry into bits[i], t AND bits[:i]
+    all 1, is left on K[i - 1]; K's len(bits) - 1 wires hold 0 on entry. One CCX a bit."""
+    carries = [t] + list(K)
+    assert len(carries) == max(1, len(bits))
+    for i in range(len(bits) - 1):
+        C.ccx(carries[i], bits[i], carries[i + 1])
+    if cout is not None:
+        C.ccx(carries[-1], bits[-1], cout)
+    for x, y in zip(carries, bits):
+        C.cx(x, y)
+
+
 def _rows(C, Y, Q, copy=True, K=None):
     """Q = Y*(2^w - Y) on 2w clean wires, w = len(Y), or Y*(2^w - 1 - Y) without the copy.
     After row i, Q < 2^(w + i + 1), so each carry lands on a wire no earlier row reached; the
@@ -173,8 +186,8 @@ def signed_digits(v):
 class SquareFold:
     # Junk wires that keep leaf row carries, capped at what the leaves have. Each saves 2 CCX,
     # one in the square and one in its reverse, and adds a wire at the square's peak, which is
-    # the circuit's: 1,048 puts secp256k1 at 4,096 wires.
-    KEEP = 1048
+    # the circuit's: 636 puts secp256k1 at 4,096 wires.
+    KEEP = 636
     def __init__(self, mod):
         self.mod, self.n = mod, mod.n
         self.f = f = (1 << mod.n) - mod.q
@@ -184,7 +197,10 @@ class SquareFold:
         # Karatsuba leaves of at most n // 6 bits: 42 at n = 256, and 3 at the toy sizes so
         # the recursion runs there. KEEP junk wires hold row carries, one CCX saved per wire.
         self.thr = max(3, mod.n // 6)
-        self.fixed_junk = 2 * mod.n + self.b + self.m + 3
+        # The two increments above the fold's low bits keep their carries, n - m - 1 and
+        # n - b - 1 wires, 1 CCX a bit in place of a Prefix's 3.
+        self.incs = (max(0, mod.n - self.m - 1), max(0, mod.n - self.b - 1))
+        self.fixed_junk = 2 * mod.n + self.b + self.m + 3 + sum(self.incs)
         self.keep = min(self.KEEP, karatsuba_carries(mod.n, self.thr))
         self.junk = self.fixed_junk + karatsuba_junk(mod.n, self.thr) + self.keep
 
@@ -263,12 +279,14 @@ class SquareFold:
         The other wires of J hold values fixed by Y, for the reverse of this block."""
         n, f, b, m = self.n, self.f, self.b, self.m
         lo, hi, E, T = J[:n], J[n:2 * n], J[2 * n:2 * n + b], J[2 * n + b:2 * n + b + m]
-        t, c, k = J[2 * n + b + m:self.fixed_junk]
+        t, c, k = J[2 * n + b + m:2 * n + b + m + 3]
+        inc = J[2 * n + b + m + 3:self.fixed_junk]
+        inc_t, inc_k = inc[:self.incs[0]], inc[self.incs[0]:]
         junk = list(J[self.fixed_junk:self.junk - self.keep])
         keep = list(J[self.junk - self.keep:]) if self.keep else None
-        # E, T, t, c and k are first written after the product, so its ancillas can borrow
+        # E, T, t, c, k and inc are first written after the product, so its ancillas can borrow
         # them: the root's add onto its upper half pads V with w - h - 1 zero wires.
-        _lend(C, E + T + [t, c, k],
+        _lend(C, E + T + [t, c, k] + inc,
               lambda: _karatsuba(C, Y, lo + hi, junk, self.thr, "R", keep))
         assert not junk and not keep
         # hi = Y - hi = ~(hi + ~Y), and lo = ~lo.
@@ -289,9 +307,7 @@ class SquareFold:
         high = lo[m:]
         add(C, T, lo[:m], cout=t)
         if high:
-            carry = Prefix(C, high)
-            C.ccx(t, carry.top, c)
-            carry.write(t)
+            _kept_inc(C, high, t, inc_t, cout=c)
         else:
             C.cx(t, c)
         # With c = 0, lo >= f. Take f off the low bits, and the borrow off the rest.
@@ -301,7 +317,7 @@ class SquareFold:
         high = lo[b:]
         for w in high:
             C.x(w)
-        Prefix(C, high).write(k)
+        _kept_inc(C, high, k, inc_k)
         for w in high:
             C.x(w)
         C.x(c)
