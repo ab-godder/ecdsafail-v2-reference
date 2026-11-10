@@ -410,7 +410,7 @@ class TwoBitMod(Mod):
             C.cx(o, c)
         C.free([cin, D, t])
 
-    def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False):
+    def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally.
 
@@ -418,10 +418,19 @@ class TwoBitMod(Mod):
         it here. cell0 says this is cell 0, where g0 implies b (Euclid's tick 0 runs on U = q > x,
         so its subtract always swaps): there sw is g0 itself and J is b ^ g0.
         Returns the wire that holds [this cell is B1] for the next tick, or None when nxt is None.
+
+        hand is the pair of wires the tick before handed over, holding H's bits n and n + 1 when
+        the previous cell is B1 and 0 otherwise; this tick uses them as word's top two wires. On
+        return, hand holds this tick's pair for the next tick, or is empty when nxt is None.
+        hand may be None only when there is neither a previous nor a next cell.
         sw and [prev is B1] each stay on one wire for the whole tick."""
         n, f, w = self.n, self.f, self.window
         g0, b = g
-        (spill, high) = C.alloc(2)
+        if hand is None:
+            assert prev is None and nxt is None
+            (spill, high) = C.alloc(2)
+        else:
+            (spill, high) = hand
         word = s + [spill, high]
         if prev is None:
             p = None
@@ -429,10 +438,6 @@ class TwoBitMod(Mod):
             p = held
         else:
             p = self._after_b1(C, prev)
-        if p is not None:
-            cswap(C, p, [s[0]], [spill])
-            cswap(C, p, [g0], [high])
-            C.cx(p, g0)
         if cell0:
             sw = g0
             C.cx(g0, b)
@@ -459,9 +464,11 @@ class TwoBitMod(Mod):
             C.cx(g0, one)
             C.cx(b, one)
             C.x(one)
-            cswap(C, one, [k0], [l0])
-            C.cx(one, nxt)
-            cswap(C, one, [k1], [nxt])
+            # On a B1, H's bits n and n + 1 move to two fresh wires, the next tick's word top.
+            ahead = C.alloc(2)
+            for k, y in zip((k0, k1), ahead):
+                C.ccx(one, k, y)
+                C.cx(y, k)
             C.x(one)
         ra, rb = self.run
         P, M = Prefix(C, H), Prefix(C, L[ra:rb])
@@ -561,15 +568,11 @@ class TwoBitMod(Mod):
         if f >> 1 & 1:
             C.ccx(b, k0, k1)
         C.cx(l0, k0)
-        if nxt is not None:
-            C.cx(g0, b)
-            C.x(b)
-            C.ccx(b, k0, l0)
-            C.x(b)
-            C.cx(g0, b)
         C.cx(sw, b)
         C.ccx(g0, a[0], l0)
         C.free([l0, spill, high])
+        if hand is not None:
+            hand[:] = [] if nxt is None else ahead
         s[:] = s[-1:] + s[:-1]
         cswap(C, sw, a, s)
         if cell0:

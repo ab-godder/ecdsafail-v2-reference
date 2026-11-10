@@ -516,15 +516,16 @@ class DialogMultiplier:
         if (first, last, pebble) not in self._bezout_ticks:
             C, n = self.C, self.mod.n
 
-            def tick(prev, g, nxt, R, S, flag):
+            def tick(prev, g, nxt, R, S, flag, hand):
                 # flag comes in holding [previous cell is B1], or 0 on a first tick, which has no
                 # previous cell, and goes out holding [this cell is B1], or empty after the last.
+                # hand carries a B1's top two bits to the next tick the same way, zero elsewhere.
                 out = self.narrow.tick(C, prev or None, g, nxt[0] if nxt else None, R, S,
                                        pebble=pebble, held=None if first else flag[0],
-                                       cell0=last)
+                                       cell0=last, hand=hand)
                 flag[:] = [] if out is None else [out]
 
-            sizes = [0 if first else 2, 2, 0 if last else 1, n, n, 1]
+            sizes = [0 if first else 2, 2, 0 if last else 1, n, n, 1, 2]
             self._bezout_ticks[first, last, pebble] = C.record_shape(tick, sizes)
         return self._bezout_ticks[first, last, pebble]
 
@@ -564,7 +565,7 @@ class DialogMultiplier:
                 and tick_widths(self.mod.q, T)[T - tail_code.CELLS] <= 6)
         lo = 2 * (T - tail_code.CELLS)
         tail_encoded = False
-        flag = []
+        flag, hand = [], []
         for i in reversed(range(T)):
             nxt_block = i // TICKS - 1
             if i % TICKS == 0 and 0 <= nxt_block < self.blocks:
@@ -600,8 +601,11 @@ class DialogMultiplier:
                     flag = C.alloc(1)
                     if not first:
                         self.narrow._mark_b1(C, prev, flag[0])
+                if not hand:
+                    # No tick before this one handed a pair over, so its cell is not B1.
+                    hand = C.alloc(2)
                 C.apply(self._bezout_tick(first, last, pebble),
-                        [prev, G[2 * i:2 * i + 2], nxt, Yr, S, flag])
+                        [prev, G[2 * i:2 * i + 2], nxt, Yr, S, flag, hand])
             prev_block = (i + 1) // TICKS
             if (i + 1) % TICKS == 0 and i + 1 < T and prev_block < self.blocks:
                 C.free(self._encode(G, prev_block, swept))
@@ -611,7 +615,7 @@ class DialogMultiplier:
                 tail_encoded = True
                 C.free([W[tail_code.FREE[0]]])
                 G[lo + tail_code.FREE[0]] = None
-        assert not flag
+        assert not flag and not hand
         if self.blocks and not block0_raw:
             C.free(self._encode(G, 0, swept))
         if tail:
