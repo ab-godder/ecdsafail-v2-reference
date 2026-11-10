@@ -231,8 +231,11 @@ WIDE_LOW = 3
 # tree going down and may take fresh wires; M only rebuilds its tree node by node coming up.
 P_PEBBLE = 99
 M_PEBBLE = -1
-P_FRESH = 99
+P_FRESH = 39
 M_FRESH = 0
+# Fewer fresh wires for P on a pebble tick: the pass holds a second decoded block across a block
+# edge, one wire more than elsewhere, so this keeps those ticks at the others' peak.
+P_FRESH_EDGE = 1
 # Give every scratch wire from the prefixes to the compare by when it comes free under the tick model,
 # earliest first, instead of off the stack: a wire one tree has just freed is busy until that tree
 # ends, and handing it to a tree that could run beside it makes the second wait for the first.
@@ -1268,7 +1271,7 @@ class TwoBitMod(Mod):
             C.alloc = idle.alloc
             C.alloc_after = idle.alloc_after
         if WIDE_P and len(H) > 1:
-            P = wide.PrefixTree(C, H, WIDE_P, P_PEBBLE, P_FRESH)
+            P = wide.PrefixTree(C, H, WIDE_P, P_PEBBLE, P_FRESH - (P_FRESH_EDGE if pebble else 0))
         elif PARALLEL_PREFIX and len(H) > 1:
             P = PrefixR(C, H, sizes=list(P_SIZES_221) if len(H) == 221 else sizes_for(len(H)))
         else:

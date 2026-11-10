@@ -17,7 +17,7 @@ from .two_bit import Prefix
 
 # Add the square's rows as lookahead trees, on ROW_TEMPS clean wires beside the fold's own.
 ROW_TREE = True
-ROW_TEMPS = 26
+ROW_TEMPS = 24
 # Fan each row's Gray-code step out through at most this many copies on clean temps, and undo the walk
 # by a prefix network; 0 runs both as CX chains.
 ROW_FAN_COPIES = 63
@@ -28,7 +28,7 @@ MODADD_TEMPS = 95
 MODADD_COPIES = 15
 # Run the fold's adds as add_lookahead trees, on FOLD_TEMPS clean wires and the fold's clean junk.
 FOLD_TREE = True
-FOLD_TEMPS = 122
+FOLD_TEMPS = 120
 # Split the rows once (Karatsuba): the pairs inside each half of Y add side by side on the two
 # halves of Q, and the pairs across the halves come from the rows of the halves' sum, a quarter
 # fewer row bits in all. The sum's rows and the sum stay on junk wires.
