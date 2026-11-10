@@ -166,6 +166,8 @@ RING_BORROW = 300
 # ring: the copies then wait for no tree temp and no tree temp waits for them. The Euclid passes run
 # about 274 wires below the circuit's peak; these and the TWO_EARLY wires take 274.
 U6_OWN_COPIES = 72
+U6_KEEP_COPIES = True
+U6_RING_SELECT = True
 # Compute a step's second-strip flag `two` at the step's start instead of after its shared
 # difference, and fan it onto pass-level copies while the shared difference runs. two = 1 implies
 # g0 = 0, and the shared difference is the identity when g0 = 0, so `two` read from V[1] before it
@@ -259,22 +261,51 @@ def shared_difference_u6(C, U, V, g0, g1, ring, peek=None, off=None):
     _fan(C, g0, G0)
     C.ccx(g0, U[-1], g1)
     _fan(C, g1, G1)
+    S0, S1, extra = G0, G1, []
+    if U6_OWN_COPIES and U6_RING_SELECT:
+        # The sweep has left its ring clean: copy the copies onto it for the select.
+        rr = min(len(ring) // 2, w - r)
+        R0, R1 = list(ring[:rr]), list(ring[rr:2 * rr])
+        for j in range(rr):
+            extra += [(G0[j % r], R0[j]), (G1[j % r], R1[j])]
+        for a, t in extra:
+            C.cx(a, t)
+        S0, S1 = G0 + R0, G1 + R1
+    s = len(S0)
     for i in range(w):
         k = cin if i == 0 else U[i - 1]
-        C.ccx(G1[i % r], V[i], k)
-        C.ccx(G0[i % r], k, V[i])
-        C.cx(G0[i % r], V[i])
-    _unfan(C, g1, G1)
-    _unfan(C, g0, G0)
-    _emit(C, reversed(up.ops))
-    _fan(C, g0, G0)
-    _fan(C, g1, G1)
-    for i in range(w):
-        C.cx(G1[i % r], U[i])
-        C.x(V[i])
-        C.cx(G0[i % r], V[i])
-        if i:
-            C.cx(G1[i % r], V[i])
+        C.ccx(S1[i % s], V[i], k)
+        C.ccx(S0[i % s], k, V[i])
+        C.cx(S0[i % s], V[i])
+    for a, t in reversed(extra):
+        C.cx(a, t)
+    if U6_OWN_COPIES and U6_KEEP_COPIES:
+        # The copies are on no tree wire, so they stay through the unwind. For the final XORs
+        # G0 holds g0 ^ g1 for a while: each bit's V then takes one XOR instead of two.
+        _emit(C, reversed(up.ops))
+        for c0, c1 in zip(G0, G1):
+            C.cx(c1, c0)
+        for i in range(w):
+            C.cx(G1[i % r], U[i])
+            C.x(V[i])
+            if i:
+                C.cx(G0[i % r], V[i])
+            else:
+                C.cx(g0, V[i])
+        for c0, c1 in zip(G0, G1):
+            C.cx(c1, c0)
+    else:
+        _unfan(C, g1, G1)
+        _unfan(C, g0, G0)
+        _emit(C, reversed(up.ops))
+        _fan(C, g0, G0)
+        _fan(C, g1, G1)
+        for i in range(w):
+            C.cx(G1[i % r], U[i])
+            C.x(V[i])
+            C.cx(G0[i % r], V[i])
+            if i:
+                C.cx(G1[i % r], V[i])
     _unfan(C, g1, G1)
     _unfan(C, g0, G0)
     C.free([cin])
