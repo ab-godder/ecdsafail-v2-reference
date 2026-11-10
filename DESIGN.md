@@ -525,6 +525,7 @@ The multiplier allocates these wires zero beside held, the Bezout pass never tou
 Each kept carry saves one CCX in each of the four passes.
 `KEEP` bounds the kept wires; the plan keeps every chain carry of narrow ticks, from the last tick back, while the total fits, and never at full width.
 At G, KEEP = 1480 keeps 1,431 carries, ticks of width 55 down to 3, and the circuit loses 5,724 CCX at the same 3,135 wires: the multiplier's peak stays below the square's.
+With the square at the 4,096-wire cap (see the square wire trades), KEEP = 2400 fills the multiplier to the same 4,096 and saves another 3,660 CCX: 3,187,581 CCX at G.
 Past that the peak grows one wire per kept carry, at about 3.8 CCX saved per wire, until the 4,096-wire cap near KEEP = 2,450 (KEEP = 2400 measured 4,041 wires and 3,193,587 CCX).
 Toy instances keep every narrow tick, so the exhaustive gate checks cover the kept step; `model_check.py`'s pass rows cover the unkept one.
 

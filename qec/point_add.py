@@ -19,7 +19,7 @@ class DialogMultiplier:
     # nothing between reads past, so the passes are the same maps on the same states.
     RAW_TAPE = True
     # Carries the forward pass keeps for the inverse pass to clear, each saving one CCX per pass.
-    KEEP = 1480
+    KEEP = 2400
 
     def __init__(self, C, mod):
         self.C, self.mod = C, mod
