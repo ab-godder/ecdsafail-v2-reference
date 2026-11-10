@@ -559,5 +559,5 @@ That majority leaves c_(m+1) XOR a_(m+1) on kept[m - 1] during the chain, and it
 Each bit's descent produces the same U, V and g1 values as both chains do, so the step's outputs are unchanged, and the kept wires end holding c_2 to c_(m+1) of a + NOT(vhat), a function of the step's input that the inverse pass clears.
 `KEEP` drops from 2400 to 2399, the most the multiplier holds without passing the 4,096-wire cap (KEEP = 2400 builds 4,097 wires); at G that is 2,399 kept carries, 53 of them on tick 314 (width 71).
 The circuit loses 212 CCX, 4 for each of those 53 carries, at 3,187,369 CCX and 4,096 wires.
-The required toy checks never build a partial tick, because toy plans fit in `KEEP`, so a separate run sets `KEEP` to every value from 0 to each toy prime's full plan (q = 251, 307, 509, 1021; 89 builds, 61 with a partial tick) and gate-checks every x with six y values, forward and inverse, at zero bad lanes.
+The required toy checks never build a partial tick, because toy plans fit in `KEEP`, so `scripts/keep_check.py` sets `KEEP` to every value from 0 to each prime's full plan (every odd prime below 600; 1,881 builds, 1,231 with a partial tick) and gate-checks every x with six y values, forward and inverse, at zero bad lanes.
 With the restoring CCX of bit m + 1 removed, that run reports 26,268 bad lanes.
