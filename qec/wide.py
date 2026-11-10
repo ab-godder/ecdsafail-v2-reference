@@ -60,14 +60,32 @@ def _spans(n, block):
     return out
 
 
-def _carry_out(T, A, B, alloc, block):
+def _merge_by_time(nodes, ready, join=10):
+    """Join adjacent nodes into one tree, always the adjacent pair whose later member is ready
+    first, so that inputs that arrive late sit near the root. Any tree over the blocks in order
+    is exact; this only picks which."""
+    level = [dict(node, t=t) for node, t in zip(nodes, ready)]
+    while len(level) > 1:
+        i = min(range(len(level) - 1), key=lambda k: (max(level[k]["t"], level[k + 1]["t"]), k))
+        lo, hi = level[i], level[i + 1]
+        level[i:i + 2] = [{"g": hi["g"], "kids": (lo, hi), "t": max(lo["t"], hi["t"]) + join}]
+    return level[0]
+
+
+def _carry_out(T, A, B, alloc, block, ready=None, split=0):
     """The carry out of A + B, no carry in, onto A's top wire. Blocks of `block` bits ripple in
     place as CDKM majorities, each from its own clean carry-in, which leaves A[i] ^ B[i] on B[i].
     A binary tree then joins the blocks: G_hi ^= P_hi G_lo, with P the AND of a block's B wires,
-    made only for a node that is some join's upper half."""
+    made only for a node that is some join's upper half. ready, when given, maps each wire of A
+    and B to when it arrives, and the tree is built by _merge_by_time instead of balanced."""
     n = len(A)
     nodes = []
+    times = []
     for lo, hi in _spans(n, block):
+        if ready is not None:
+            # The ripple takes about 11 ticks a bit from the bit that arrives latest for its place.
+            times.append(max(max(ready.get(A[i], 0), ready.get(B[i], 0)) + 11 * (hi - i)
+                             for i in range(lo, hi)))
         cin = alloc()
         T.cx(A[lo], B[lo])
         T.cx(A[lo], cin)
@@ -77,15 +95,27 @@ def _carry_out(T, A, B, alloc, block):
             T.cx(A[i], A[i - 1])
             T.ccx(A[i - 1], B[i], A[i])
         nodes.append({"g": A[hi - 1], "bits": B[lo:hi], "kids": None})
-    level = nodes
-    while len(level) > 1:
-        nxt = []
-        for i in range(0, len(level) - 1, 2):
-            nxt.append({"g": level[i + 1]["g"], "kids": (level[i], level[i + 1])})
-        if len(level) % 2:
-            nxt.append(level[-1])
-        level = nxt
-    root = level[0]
+    def balanced(level):
+        while len(level) > 1:
+            nxt = []
+            for i in range(0, len(level) - 1, 2):
+                nxt.append({"g": level[i + 1]["g"], "kids": (level[i], level[i + 1])})
+            if len(level) % 2:
+                nxt.append(level[-1])
+            level = nxt
+        return level[0]
+
+    if ready is not None:
+        root = _merge_by_time(nodes, times)
+    elif split:
+        # Balanced trees over the blocks below and above split bits, joined at the root: the low
+        # bits arrive last, and only the low tree and one join stand between them and the root.
+        k = sum(1 for node in nodes if B.index(node["bits"][-1]) < split)
+        root = balanced(nodes[:k]) if k == len(nodes) else balanced(nodes[k:])
+        if 0 < k < len(nodes):
+            root = {"g": root["g"], "kids": (balanced(nodes[:k]), root)}
+    else:
+        root = balanced(nodes)
 
     def mark(node, need):
         node["need"] = need
@@ -113,8 +143,9 @@ def _carry_out(T, A, B, alloc, block):
     return root["g"]
 
 
-def gt_tree(C, A, B, t, ctrl, block=4):
-    """t ^= ctrl * [A > B], with A, B and ctrl restored: the carry out of A + ~B."""
+def gt_tree(C, A, B, t, ctrl, block=4, ready=None, split=0):
+    """t ^= ctrl * [A > B], with A, B and ctrl restored: the carry out of A + ~B. ready: see
+    _carry_out."""
     assert len(A) == len(B) >= 1 and ctrl not in (*A, *B, t)
     taken = []
 
@@ -126,7 +157,7 @@ def gt_tree(C, A, B, t, ctrl, block=4):
     T = Tape()
     for x in B:
         T.x(x)
-    top = _carry_out(T, list(A), list(B), alloc, block)
+    top = _carry_out(T, list(A), list(B), alloc, block, ready, split)
     T.play(C)
     C.ccx(ctrl, top, t)
     T.play(C, reverse=True)
@@ -187,21 +218,27 @@ class PrefixTree:
     def restore(self):
         pass
 
-    def write(self, t, mid=None):
+    def ncarries(self):
+        """Clean wires write takes for its carries."""
+        return max(len(self.blocks) - 1, 0)
+
+    def write(self, t, mid=None, carry_wires=None):
         """mid(z), when given, runs while z holds AND(~new bits), before t's last use: t * z is
-        the carry out of the bits, t * AND(old bits)."""
+        the carry out of the bits, t * AND(old bits). carry_wires, when given, are clean wires
+        for the carries (ncarries of them), taken in place of the allocator's."""
         C = self.C
         if not self.bits:
             return
         carries = Tape()
         made = []
+        pool = list(carry_wires) if carry_wires is not None else None
 
         def down(node, c):
             if node["kids"] is None:
                 node["cin"] = c
                 return
             lo, hi = node["kids"]
-            ch = target(C, c, lo["a"])
+            ch = pool.pop(0) if pool is not None else target(C, c, lo["a"])
             made.append(ch)
             carries.ccx(c, lo["a"], ch)
             C.ccx(c, lo["a"], ch)
