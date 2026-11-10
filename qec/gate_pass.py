@@ -204,10 +204,8 @@ def prune_unused_wires(circuit):
     return dropped
 
 
-def main(src, dst):
-    with open(src) as fh:
-        doc = json.load(fh)
-    circuit = doc.get("circuit", doc)
+def apply(circuit):
+    """Run the three rewrites on circuit in place. Returns the stats main prints."""
     before = schedule(circuit)
     removed = 0
     for d in circuit.get("definitions", []):
@@ -218,10 +216,18 @@ def main(src, dst):
     after_cancel = schedule(circuit)
     after = order_controls(circuit)
     pruned = prune_unused_wires(circuit)
+    return {"ticks_in": before, "records_cancelled": removed, "ticks_after_cancel": after_cancel,
+            "ticks_out": after, "definition_wires_pruned": pruned, "wires": circuit["num_wires"]}
+
+
+def main(src, dst):
+    with open(src) as fh:
+        doc = json.load(fh)
+    circuit = doc.get("circuit", doc)
+    stats = apply(circuit)
     with open(dst, "w") as fh:
         json.dump(doc, fh, separators=(",", ":"))
-    print(json.dumps({"ticks_in": before, "records_cancelled": removed, "ticks_after_cancel": after_cancel,
-                      "ticks_out": after, "definition_wires_pruned": pruned, "wires": circuit["num_wires"]}))
+    print(json.dumps(stats))
 
 
 if __name__ == "__main__":
