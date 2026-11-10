@@ -15,8 +15,8 @@ adds R and does no reduction, leaving H = 2T + R, and the subtract after it make
 Add and shift now have complementary controls, so one rolling XOR wire D, the sum of the x lines
 so far, lets one CCX carry both: a pair of neighbouring word bits takes D, or on J its own XOR.
 
-H's bit 0 is R's, so it is not stored. On a B1 its wire and the next cell's g0, which must be 1,
-hold H's two top bits between the ticks. The only other wire held across them is
+H's bit 0 is R's, so it is not stored. On a B1 a pair of wires that the tick hands to the next
+one holds H's two top bits between the ticks, and is 0 elsewhere. The only other wire held across them is
 [this cell is B1], which the tick makes from its own sw with an X and two CX and the next tick
 reads as held, in place of computing it with a CCX.
 """

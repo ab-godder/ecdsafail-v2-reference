@@ -75,7 +75,7 @@ The pass ends with R = 0 by the existing proof of the recurrence, and a B1 does 
 **S4. Stored form.**
 Let H = 2T + R on a B1 that is not the last tick.
 Then H < 3q < 2ⁿ⁺², and H ≡ R mod 2.
-After the tick, in the rotated S register, wires 1 to n − 1 hold H's bits 1 to n − 1, wire 0 holds H's bit n, and the next cell's g0 wire holds H's bit n + 1.
+After the tick, in the rotated S register, wires 1 to n − 1 hold H's bits 1 to n − 1 and wire 0 holds 0. The tick hands the next tick a pair of wires, `hand`, that holds H's bits n and n + 1; on every other lane both are 0.
 H's bit 0 is not stored, because it equals R₀, which stands in R.
 The previous cell's wires are unchanged, and they still read B1.
 So a held tick can recover H from its own inputs.
@@ -154,20 +154,20 @@ The first bracket stays open through the first chain, so `one` = g0 ⊕ J is two
 Its wire does not stay through the reduction, because the reduction is the peak.
 
 **S13. B1 is inert in the reduction.**
-On a B1 that is not last, before either chain, k0 moves to l0 and k1 to the next cell's g0, whose 1 is first cleared.
-This is sound because l0 = 0 there by g0 = 0, and next g0 = 1 by D2.
+On a B1 that is not last, before either chain, k0 and k1 move to two fresh wires, the pair the tick hands over.
+The next cell's g0 is not touched, so it stays 1 by D2, and l0 = 0 there by g0 = 0 for the whole tick.
 Then every selector is 0, so every logical carry of both chains is 0, and neither chain reads L[0] into anything.
 The first chain's carries sit on H's wires, which equal the logical carries only when P = 1.
 When P = 0 they may hold junk, which nothing reads except through P and which the first chain's reverse removes.
 So e = 0, and every carry of the second chain is 0, both on its clean wires and on the selectors it perches on, which are 0 here.
 `P.write(0)` and `M.write(0)` restore their words.
-At the end `cx(l0, k0)` gives wire k0 the bit, and `ccx(L, k0, l0)` clears l0, which S11 keeps to 1 CCX.
+At the end `cx(l0, k0)` leaves wire k0 at 0, and `ccx(g0, R0, l0)` leaves l0 at 0.
 That is S4's form.
+The first chain's bottom carry l0·(one ⊕ K0) is on a clean wire and is not cleared at its fall; `cx(l0, c1)` and `ccx(l0, e, c1)` turn it into the second chain's l0·k0 = l0·(K0 ⊕ e), because l0 = 1 implies g0 = 1 and so one = 1. On a B1 both are 0.
 
 **S14. Entering a held tick.**
-`cswap(p, s[0], spill)` moves H's bit n to word[n] and leaves word[0] = 0, which is H − R₀ by S5.
-`cswap(p, g0, high)` moves H's bit n + 1 to word[n + 1], and `cx(p, g0)` restores g0 = 1.
-From there g0 is true, so the tape is whole again.
+The handed-over pair is the tick's spill and high, word[n] and word[n + 1], so on a held lane word holds H with word[0] = 0, which is H − R₀ by S5, and on every other lane they are 0 as before.
+g0 was never borrowed, so the tape is whole.
 
 **S15. The last tick.**
 With nxt = None, `one` = 1 and nothing is hidden.

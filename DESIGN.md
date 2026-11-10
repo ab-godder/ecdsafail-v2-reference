@@ -527,3 +527,12 @@ Each kept carry saves one CCX in each of the four passes.
 At G, KEEP = 1480 keeps 1,431 carries, ticks of width 55 down to 3, and the circuit loses 5,724 CCX at the same 3,135 wires: the multiplier's peak stays below the square's.
 Past that the peak grows one wire per kept carry, at about 3.8 CCX saved per wire, until the 4,096-wire cap near KEEP = 2,450 (KEEP = 2400 measured 4,041 wires and 3,193,587 CCX).
 Toy instances keep every narrow tick, so the exhaustive gate checks cover the kept step; `model_check.py`'s pass rows cover the unkept one.
+
+## Handed-over held bits and a shared bottom carry
+
+A non-last B1 hides H's bits n and n + 1 on two fresh wires instead of on l0 and the next cell's g0, and the tick hands that pair to the next tick as its word's top two wires.
+They are 0 unless the previous cell is B1, so the held tick needs no cswap to move bit n off S's wire 0 or bit n + 1 off g0, and l0 stays 0 on a B1, so the B1 clear of l0 at the tick's end goes.
+That is 3 CCX per tick with a previous and a next cell, for +2 clean wires at the tick's peak and 2 wires held between ticks.
+The first chain's bottom carry l0·(one ⊕ K0) sits on a clean wire and survives its fall; after k = K + e, `cx(l0, c1)` and `ccx(l0, e, c1)` make it the second chain's l0·k0, since l0 = 1 implies one = 1.
+That is 1 CCX per tick for +1 clean wire during the first chain.
+Together they take G from 3,206,027 to 3,202,969 CCX at 3,135 wires.
