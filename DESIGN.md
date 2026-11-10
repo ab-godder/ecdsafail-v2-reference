@@ -525,8 +525,8 @@ The multiplier allocates these wires zero beside held, the Bezout pass never tou
 Each kept carry saves one CCX in each of the four passes.
 `KEEP` bounds the kept wires; the plan keeps every chain carry of narrow ticks, from the last tick back, while the total fits, and never at full width.
 At G, KEEP = 1480 keeps 1,431 carries, ticks of width 55 down to 3, and the circuit loses 5,724 CCX at the same 3,135 wires: the multiplier's peak stays below the square's.
-With the square at the 4,096-wire cap (see the square wire trades) and a partly kept boundary tick, KEEP = 2399 fills the multiplier to the same 4,096 (its peak is 1,697 + KEEP): 3,187,369 CCX at G.
-Past that the peak grows one wire per kept carry, at about 3.8 CCX saved per wire, until the 4,096-wire cap near KEEP = 2,450 (KEEP = 2400 measured 4,041 wires and 3,193,587 CCX).
+Once the square sits at the 4,096-wire cap (see the square wire trades), the multiplier may grow to the same peak, which is 1,697 wires plus its kept carries.
+KEEP = 2400 then keeps the whole ticks of width 70 down to 3, 2,346 carries, for a multiplier peak of 4,043 wires: 3,187,581 CCX at G.
 Toy instances keep every narrow tick, so the exhaustive gate checks cover the kept step; `model_check.py`'s pass rows cover the unkept one.
 
 ## Handed-over held bits and a shared bottom carry
@@ -557,7 +557,7 @@ At G: 3,206,027 -> 3,203,079 CCX (-2,948), 3,135 -> 4,096 wires.
 In `_kept_difference` with m kept wires, bits 1 to m build c_(i+1) on kept[i - 1] as before, and bits m + 1 and up run `_shared_difference`'s in-place majority, the first of them taking c_(m+1) from kept[m - 1].
 That majority leaves c_(m+1) XOR a_(m+1) on kept[m - 1] during the chain, and its descent's CX restores c_(m+1) before the kept bits' descent, which reads only carry[i] for i <= m.
 Each bit's descent produces the same U, V and g1 values as both chains do, so the step's outputs are unchanged, and the kept wires end holding c_2 to c_(m+1) of a + NOT(vhat), a function of the step's input that the inverse pass clears.
-`KEEP` drops from 1480 to 1438, the most the multiplier holds without passing the square's 3,135-wire peak; at G that is 1,438 kept carries, 7 of them on tick 329 (width 56).
-The circuit loses 28 CCX, at 3,194,161 CCX and 3,135 wires.
+`KEEP` drops from 2400 to 2399, the most the multiplier holds without passing the 4,096-wire cap (KEEP = 2400 builds 4,097 wires); at G that is 2,399 kept carries, 53 of them on tick 314 (width 71).
+The circuit loses 212 CCX, 4 for each of those 53 carries, at 3,187,369 CCX and 4,096 wires.
 The required toy checks never build a partial tick, because toy plans fit in `KEEP`, so a separate run sets `KEEP` to every value from 0 to each toy prime's full plan (q = 251, 307, 509, 1021; 89 builds, 61 with a partial tick) and gate-checks every x with six y values, forward and inverse, at zero bad lanes.
 With the restoring CCX of bit m + 1 removed, that run reports 26,268 bad lanes.
