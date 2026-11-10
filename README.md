@@ -39,6 +39,8 @@ $PY -I scripts/model_check.py                                  # classical dialo
 $PY -I scripts/check.py --toy-bits 4 6 7 8 9 10 --toy-per-size 6   # gate-level exhaustive check on toy curves
 $PY -I scripts/mutation_control.py                             # negative control for the checker
 $PY -I scripts/component_check.py                              # 256-bit components on boundary inputs
+$PY -I scripts/square_check.py                                 # square, gen-controlled modadd and reverse at several KEEP values
+$PY -I scripts/keep_check.py                                   # multiplier at every Euclid KEEP budget, odd primes below 600
 $PY -I scripts/check.py --secp --secp-random 120               # 256-bit full circuit, sampled
 $PY -I scripts/emit.py --out artifacts/secp256k1_G_circuit.json.gz
 gzip -dc artifacts/secp256k1_G_circuit.json.gz | harness/target/release/qec-harness --circuit - --cases artifacts/secp256k1_cases.json
@@ -62,10 +64,10 @@ Python is stdlib only. The harness is a Rust crate whose dependencies are path r
 All numbers are measured unless marked as estimates.
 
 **This branch.**
-At G the circuit is 3,135 wires, 3,206,027 CCX, 22,442,189 T and 11,720,511 ops, measured from the unchanged emitter and baseline script.
-The scheduled depth is 36,228,738 ticks, giving qubit-time 113,577,093,630.
-Wires × T is 70,356,262,515, which is 39.67% below the reference's 2,311 × 50,465,933.
-The hierarchical JSON for G is 35,111,967 bytes, under the 100 MiB upload cap; the flat circuit is still over the 10,000,000 operation cap.
+At G the circuit is 4,096 wires, 3,187,369 CCX, 22,311,583 T and 11,715,124 ops, measured from the unchanged emitter and baseline script.
+The scheduled depth is 35,578,685 ticks, giving qubit-time 145,730,293,760.
+Wires × T is 91,388,243,968, which is 21.64% below the reference's 2,311 × 50,465,933.
+The hierarchical JSON for G is 35,245,443 bytes, under the 100 MiB upload cap; the flat circuit is still over the 10,000,000 operation cap.
 Two named limits apply.
 `I2.model`'s zero-caller row is narrowed from the reference's gate.
 The standalone multiplier is restricted to x in [1, q), and nonzero x at its entries rests on the kernel's flag code and the non-full build refusal.
