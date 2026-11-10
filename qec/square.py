@@ -15,6 +15,16 @@ from .arith import _carries, _uncarry, add, add_const, gt_into
 from .two_bit import Prefix
 
 
+def _lend(C, wires, fn):
+    """Run fn with wires, which hold 0, handed out by C's allocator before any other. fn returns
+    every ancilla it takes clean, so they hold 0 again after, and they leave the free list."""
+    C.free(wires)
+    fn()
+    held = set(wires)
+    assert held <= set(C.free_stack), "a lent wire was kept"
+    C.free_stack = [w for w in C.free_stack if w not in held]
+
+
 def _keep_add(C, a, b, cout, K):
     """b += a, cout ^= carry out, each inner carry left on a junk wire popped from K."""
     c = None
@@ -82,6 +92,15 @@ def karatsuba_junk(w, thr):
     h = (w + 1) // 2
     ws = h + 1
     return karatsuba_junk(h, thr) + karatsuba_junk(w - h, thr) + 3 * ws + karatsuba_junk(ws, thr)
+
+
+def karatsuba_carries(w, thr):
+    """Inner row carries _karatsuba's leaves can keep for width w: a leaf of width v has rows
+    of v - 2, ..., 1, 0 inner carries."""
+    if w <= thr:
+        return (w - 1) * (w - 2) // 2 if w > 1 else 0
+    h = (w + 1) // 2
+    return karatsuba_carries(h, thr) + karatsuba_carries(w - h, thr) + karatsuba_carries(h + 1, thr)
 
 
 def _karatsuba(C, Y, Q, J, thr, kind="R", K=None):
@@ -163,7 +182,8 @@ class SquareFold:
         # the recursion runs there. KEEP junk wires hold row carries, one CCX saved per wire.
         self.thr = max(3, mod.n // 6)
         self.fixed_junk = 2 * mod.n + self.b + self.m + 3
-        self.junk = self.fixed_junk + karatsuba_junk(mod.n, self.thr) + self.KEEP
+        self.keep = min(self.KEEP, karatsuba_carries(mod.n, self.thr))
+        self.junk = self.fixed_junk + karatsuba_junk(mod.n, self.thr) + self.keep
 
     @staticmethod
     def applies(q):
@@ -241,10 +261,13 @@ class SquareFold:
         n, f, b, m = self.n, self.f, self.b, self.m
         lo, hi, E, T = J[:n], J[n:2 * n], J[2 * n:2 * n + b], J[2 * n + b:2 * n + b + m]
         t, c, k = J[2 * n + b + m:self.fixed_junk]
-        junk = list(J[self.fixed_junk:self.junk - self.KEEP])
-        keep = list(J[self.junk - self.KEEP:]) if self.KEEP else None
-        _karatsuba(C, Y, lo + hi, junk, self.thr, "R", keep)
-        assert not junk
+        junk = list(J[self.fixed_junk:self.junk - self.keep])
+        keep = list(J[self.junk - self.keep:]) if self.keep else None
+        # E, T, t, c and k are first written after the product, so its ancillas can borrow
+        # them: the root's add onto its upper half pads V with w - h - 1 zero wires.
+        _lend(C, E + T + [t, c, k],
+              lambda: _karatsuba(C, Y, lo + hi, junk, self.thr, "R", keep))
+        assert not junk and not keep
         # hi = Y - hi = ~(hi + ~Y), and lo = ~lo.
         for w in Y:
             C.x(w)
