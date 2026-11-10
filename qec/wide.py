@@ -133,6 +133,11 @@ def gt_tree(C, A, B, t, ctrl, block=4):
     C.free(taken[::-1])
 
 
+# PrefixTree's pebbled write, while it has fresh wires to spend, takes a free wire that comes free
+# at most this many ticks after the gate's inputs before it takes a fresh one.
+PEBBLE_WAIT = 10
+
+
 class PrefixTree:
     """AND(bits) on .top, and write(t): bits += t mod 2^len(bits), on clean scratch.
 
@@ -146,15 +151,17 @@ class PrefixTree:
     was all ones exactly when it is all zeros now.
     """
 
-    def __init__(self, C, bits, block=4):
-        self.C, self.bits = C, list(bits)
+    def __init__(self, C, bits, block=4, pebble=None, fresh=0):
+        """pebble: None for write's own order, else the depth down to which _write_pebbled clears
+        tree nodes going down. fresh: how many untouched wires that write may take."""
+        self.C, self.bits, self.pebble, self.fresh = C, list(bits), pebble, fresh
         self.taken, self.blocks, self.top = [], [], None
         h = len(self.bits)
         if h == 0:
             return
         self.chains, self.tree = Tape(), Tape()
-        for lo in range(0, h, block):
-            seg = self.bits[lo:lo + block]
+        for lo, hi in _spans(h, block):
+            seg = self.bits[lo:hi]
             q = [seg[0]]
             for x in seg[1:]:
                 t = self._alloc()
@@ -187,12 +194,129 @@ class PrefixTree:
     def restore(self):
         pass
 
+    def _add_blocks(self):
+        """Each block adds its carry in, then holds new bits ^ cin, on which the old chains read."""
+        C = self.C
+        for blk in self.blocks:
+            seg, q, cin = blk["seg"], blk["q"], blk["cin"]
+            for k in range(len(seg) - 1, 0, -1):
+                C.ccx(cin, q[k - 1], seg[k])
+            C.cx(cin, seg[0])
+        for blk in self.blocks:
+            for x in blk["seg"]:
+                C.cx(blk["cin"], x)
+
+    def _write_pebbled(self, t, mid):
+        """write's gates in another order and on other wires, so that the tree and the carries are
+        never all live at once. Going down, a node no deeper than self.pebble clears its AND as
+        soon as its carry is made: only its parent's carry read that AND, and its children still
+        hold theirs. The rest of the old tree clears after the carries are made, as write clears it
+        after the adds; the adds and the old chains' clear do not read it. Coming up on the
+        complemented new bits, post-order, each node rebuilds its AND from its children's and then
+        clears its carry, c * AND(~new lo) = c * AND(old lo), whose last reader was the adds."""
+        C = self.C
+        idle = getattr(getattr(C, "alloc_after", None), "__self__", None)
+        budget = [self.fresh]
+
+        def target(C, *inputs):
+            """With fresh wires left: a free wire free by the time inputs are, else one at most
+            PEBBLE_WAIT ticks later, else a wire the tick has not touched. Without, wide.target."""
+            if idle is None or budget[0] <= 0:
+                return globals()["target"](C, *inputs)
+            r = idle.ready()
+            t = max((r.get(w, 0) for w in inputs), default=0)
+            fit = [w for w in C.free_stack if w in r and r[w] <= t]
+            if fit:
+                w = max(fit, key=lambda x: r[x])
+                C.free_stack.remove(w)
+                return w
+            touched = [w for w in C.free_stack if w in r]
+            if touched:
+                w = min(touched, key=lambda x: r[x])
+                if r[w] - t <= PEBBLE_WAIT:
+                    C.free_stack.remove(w)
+                    return w
+            budget[0] -= 1
+            return idle._untouched()
+
+        tree_wires = {node["a"] for node in self._internal(self.root)}
+        self.taken = [w for w in self.taken if w not in tree_wires]
+        cleared = set()
+
+        def down(node, c, depth):
+            if node["kids"] is None:
+                node["cin"] = c
+                return
+            lo, hi = node["kids"]
+            ch = target(C, c, lo["a"])
+            C.ccx(c, lo["a"], ch)
+            node["ch"] = ch
+            if depth <= self.pebble:
+                C.ccx(lo["a"], hi["a"], node["a"])
+                C.free([node["a"]])
+                cleared.add(node["a"])
+            down(lo, c, depth + 1)
+            down(hi, ch, depth + 1)
+
+        down(self.root, t, 0)
+        rest = []
+        for _, x, y, a in reversed(self.tree.ops):
+            if a not in cleared:
+                C.ccx(x, y, a)
+                rest.append(a)
+        C.free(rest)
+        self._add_blocks()
+        self.chains.play(C, reverse=True)
+        for blk in self.blocks:
+            for x in blk["seg"]:
+                C.cx(blk["cin"], x)
+        for x in self.bits:
+            C.x(x)
+        self.chains.play(C)
+        rebuilt = []
+
+        def up(node, c):
+            """Rebuild node's AND on ~new bits and clear the carries at and below it; c is the
+            node's carry in. mid runs at the root, before its carry, t's last reader, clears."""
+            if node["kids"] is None:
+                return node["a"]
+            lo, hi = node["kids"]
+            la = up(lo, c)
+            ha = up(hi, node["ch"])
+            a = target(C, la, ha)
+            C.ccx(la, ha, a)
+            rebuilt.append((la, ha, a))
+            if node is self.root and mid is not None:
+                mid(a)
+            C.ccx(c, la, node["ch"])
+            C.free([node["ch"]])
+            return a
+
+        top = up(self.root, t)
+        if self.root["kids"] is None and mid is not None:
+            mid(top)
+        for la, ha, a in reversed(rebuilt):
+            C.ccx(la, ha, a)
+        C.free([a for _, _, a in rebuilt])
+        self.chains.play(C, reverse=True)
+        for x in self.bits:
+            C.x(x)
+        C.free(self.taken[::-1])
+
+    def _internal(self, node):
+        if node["kids"] is None:
+            return []
+        lo, hi = node["kids"]
+        return [node] + self._internal(lo) + self._internal(hi)
+
     def write(self, t, mid=None):
         """mid(z), when given, runs while z holds AND(~new bits), before t's last use: t * z is
         the carry out of the bits, t * AND(old bits)."""
         C = self.C
         if not self.bits:
             return
+        if self.pebble is not None:
+            return self._write_pebbled(t, mid)
         carries = Tape()
         made = []
 
@@ -209,14 +333,7 @@ class PrefixTree:
             down(hi, ch)
 
         down(self.root, t)
-        for blk in self.blocks:
-            seg, q, cin = blk["seg"], blk["q"], blk["cin"]
-            for k in range(len(seg) - 1, 0, -1):
-                C.ccx(cin, q[k - 1], seg[k])
-            C.cx(cin, seg[0])
-        for blk in self.blocks:
-            for x in blk["seg"]:
-                C.cx(blk["cin"], x)
+        self._add_blocks()
         self.tree.play(C, reverse=True)
         self.chains.play(C, reverse=True)
         for blk in self.blocks:

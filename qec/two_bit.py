@@ -227,6 +227,12 @@ WIDE_P = 4
 WIDE_M = 3
 # The tick's two low chains as wide.LowAdd in blocks of this many bits (0 = _chain_up and _chain_down).
 WIDE_LOW = 3
+# P's and M's writes in PrefixTree._write_pebbled's order (None: write's own). P clears its whole
+# tree going down and may take fresh wires; M only rebuilds its tree node by node coming up.
+P_PEBBLE = 99
+M_PEBBLE = -1
+P_FRESH = 99
+M_FRESH = 0
 # Give every scratch wire from the prefixes to the compare by when it comes free under the tick model,
 # earliest first, instead of off the stack: a wire one tree has just freed is busy until that tree
 # ends, and handing it to a tree that could run beside it makes the second wait for the first.
@@ -1262,12 +1268,12 @@ class TwoBitMod(Mod):
             C.alloc = idle.alloc
             C.alloc_after = idle.alloc_after
         if WIDE_P and len(H) > 1:
-            P = wide.PrefixTree(C, H, WIDE_P)
+            P = wide.PrefixTree(C, H, WIDE_P, P_PEBBLE, P_FRESH)
         elif PARALLEL_PREFIX and len(H) > 1:
             P = PrefixR(C, H, sizes=list(P_SIZES_221) if len(H) == 221 else sizes_for(len(H)))
         else:
             P = Prefix(C, H, cap=37)
-        M = wide.PrefixTree(C, L[ra:rb], WIDE_M) if WIDE_M and rb - ra > 1 else Prefix(C, L[ra:rb])
+        M = wide.PrefixTree(C, L[ra:rb], WIDE_M, M_PEBBLE, M_FRESH) if WIDE_M and rb - ra > 1 else Prefix(C, L[ra:rb])
         if idle and not WIDE_IDLE:
             del C.alloc, C.alloc_after
         # Only M's skip reads M before its write, so the top below its last is cleared until then.
