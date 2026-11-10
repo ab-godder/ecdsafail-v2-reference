@@ -5,6 +5,10 @@ name as an output, and leaves every scratch wire it allocates clean.
 """
 
 
+# PrefixTree.write's mid hook after the carries' clear instead of before it.
+MID_AFTER_CARRIES = True
+
+
 def target(C, *inputs):
     """A clean wire for a gate that reads `inputs`: the circuit's alloc_after when it has one, which
     picks a wire that is free by the time the inputs are, else its next wire."""
@@ -60,11 +64,12 @@ def _spans(n, block):
     return out
 
 
-def _carry_out(T, A, B, alloc, block):
+def _carry_out(T, A, B, alloc, block, split=0):
     """The carry out of A + B, no carry in, onto A's top wire. Blocks of `block` bits ripple in
     place as CDKM majorities, each from its own clean carry-in, which leaves A[i] ^ B[i] on B[i].
     A binary tree then joins the blocks: G_hi ^= P_hi G_lo, with P the AND of a block's B wires,
-    made only for a node that is some join's upper half."""
+    made only for a node that is some join's upper half. split, when given, is the bits (one, or a
+    tuple of cuts) below which the blocks get balanced trees of their own, joined nearer the root."""
     n = len(A)
     nodes = []
     for lo, hi in _spans(n, block):
@@ -77,15 +82,34 @@ def _carry_out(T, A, B, alloc, block):
             T.cx(A[i], A[i - 1])
             T.ccx(A[i - 1], B[i], A[i])
         nodes.append({"g": A[hi - 1], "bits": B[lo:hi], "kids": None})
-    level = nodes
-    while len(level) > 1:
-        nxt = []
-        for i in range(0, len(level) - 1, 2):
-            nxt.append({"g": level[i + 1]["g"], "kids": (level[i], level[i + 1])})
-        if len(level) % 2:
-            nxt.append(level[-1])
-        level = nxt
-    root = level[0]
+    def balanced(level):
+        while len(level) > 1:
+            nxt = []
+            for i in range(0, len(level) - 1, 2):
+                nxt.append({"g": level[i + 1]["g"], "kids": (level[i], level[i + 1])})
+            if len(level) % 2:
+                nxt.append(level[-1])
+            level = nxt
+        return level[0]
+
+    if split:
+        # Balanced trees over the blocks between the split bits, each joined to the tree of all
+        # above it: the low bits arrive last, and only their tree and a join or two stand between
+        # them and the root.
+        cuts = split if isinstance(split, tuple) else (split,)
+        segs, start = [], 0
+        for cut in cuts:
+            k = sum(1 for node in nodes if B.index(node["bits"][-1]) < cut)
+            if k > start:
+                segs.append(nodes[start:k])
+                start = k
+        if start < len(nodes):
+            segs.append(nodes[start:])
+        root = balanced(segs[-1])
+        for seg in reversed(segs[:-1]):
+            root = {"g": root["g"], "kids": (balanced(seg), root)}
+    else:
+        root = balanced(nodes)
 
     def mark(node, need):
         node["need"] = need
@@ -113,8 +137,9 @@ def _carry_out(T, A, B, alloc, block):
     return root["g"]
 
 
-def gt_tree(C, A, B, t, ctrl, block=4):
-    """t ^= ctrl * [A > B], with A, B and ctrl restored: the carry out of A + ~B."""
+def gt_tree(C, A, B, t, ctrl, block=4, split=0):
+    """t ^= ctrl * [A > B], with A, B and ctrl restored: the carry out of A + ~B. split: see
+    _carry_out."""
     assert len(A) == len(B) >= 1 and ctrl not in (*A, *B, t)
     taken = []
 
@@ -126,7 +151,7 @@ def gt_tree(C, A, B, t, ctrl, block=4):
     T = Tape()
     for x in B:
         T.x(x)
-    top = _carry_out(T, list(A), list(B), alloc, block)
+    top = _carry_out(T, list(A), list(B), alloc, block, split)
     T.play(C)
     C.ccx(ctrl, top, t)
     T.play(C, reverse=True)
@@ -343,9 +368,14 @@ class PrefixTree:
             C.x(x)
         self.chains.play(C)
         self.tree.play(C)
-        if mid is not None:
+        if mid is not None and not MID_AFTER_CARRIES:
             mid(self.top)
         carries.play(C, reverse=True)
+        if mid is not None and MID_AFTER_CARRIES:
+            # The carries' clear reads t and the rebuilt tree below the root and writes only
+            # the carries, which mid does not read: the two commute, and mid then holds up
+            # only the tree's and chains' clears.
+            mid(self.top)
         self.tree.play(C, reverse=True)
         self.chains.play(C, reverse=True)
         for x in self.bits:
@@ -396,6 +426,14 @@ class LowAdd:
             self.blocks.append({"lo": lo, "hi": hi, "z": z, "pi": None, "cin": None})
         self.pis, self.join = Tape(), Tape()
         self.skip = None
+        self._chain_joins(a, b, w)
+        self.fan.play(C)
+        self.up.play(C)
+        self.pis.play(C)
+        self.join.play(C)
+
+    def _chain_joins(self, a, b, w):
+        L_, K = self.L, self.K
         carry = None
         for blk in self.blocks:
             lo, hi = blk["lo"], blk["hi"]
@@ -413,10 +451,6 @@ class LowAdd:
         if b == w and b > a:
             carry = self._skip(carry)
         self.top = carry
-        self.fan.play(C)
-        self.up.play(C)
-        self.pis.play(C)
-        self.join.play(C)
 
     def _alloc(self):
         (w,) = self.C.alloc(1)

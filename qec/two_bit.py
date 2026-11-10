@@ -193,8 +193,13 @@ HIGH_CARRIERS = True
 # Put the final swap's sw and control copies on scratch the next tick reaches only after its add.
 LATE_FINAL_WIRES = True
 LATE_MIN_COPIES = 6
+# Deal the final swap's bits to sw's copies in turn instead of in slices: the compare restores a
+# block's bits together, and in a slice they would wait for one copy in turn.
+FINAL_INTERLEAVE = True
+# The final swap's first this many bits run on sw before its fan.
+FINAL_EARLY = 1
 # Copies of p for un-copying it from the word after the add (1 = none).
-P_FAN = 8
+P_FAN = 32
 # Run the tick's add as 2elliot depth/v2's CDKM ripple instead of either add above: 579,096
 # fewer CCX on the whole circuit for 1,535,700 more ticks (measured after the post-pass).
 CDKM_ADD = False
@@ -206,16 +211,21 @@ RESTORE_IDLE = True
 # The tick's compare as wide.gt_tree on clean scratch, in blocks of this many bits (0 = compare_blocks).
 WIDE_CMP = (2, 3, 4, 5)
 # The tick's add in blocks of this many bits, each with its own temps (0 = LA_F_WIDE / LA_B_WIDE).
-WIDE_ADD = 7
+WIDE_ADD = 9
 # The add's blocks ramp from 1 up to WIDE_ADD at both ends, each size this many times.
-WIDE_ADD_RAMP = 2
-WIDE_ADD_COPIES = 16
+WIDE_ADD_RAMP = 1
+WIDE_ADD_COPIES = 24
 # The add's backward sweep in its own blocks, (top, ramp) as above (None = the forward sweep's).
 # Its chain costs 11 ticks a block against the forward chain's 7, so its blocks are larger.
-WIDE_ADD_BACK = (10, 1)
+WIDE_ADD_BACK = (10, (2, 1))
+# Explicit block sizes, bottom up, for the forward and backward sweeps at the width they sum to.
+WIDE_ADD_FSIZES = (1, 1, 2, 2, 3, 4, 5, 6, 6, 8, 9, 9, 11, 10, 12, 9, 6, 14, 10, 8, 9, 10, 15, 9, 13, 9, 11, 11, 5, 8, 6, 6, 2, 3, 2)
+WIDE_ADD_BSIZES = (1, 1, 1, 1, 3, 4, 5, 3, 6, 6, 5, 8, 7, 7, 9, 5, 8, 10, 10, 10, 9, 9, 7, 10, 11, 11, 10, 11, 11, 10, 9, 8, 6, 7, 6, 4, 3, 2, 1)
 # Run the add's first CX wave through U as a log-depth network, and fan p into the word through
 # copies. The forward sweep's blocks then start together instead of one bit a tick.
-WIDE_WAVE = False
+WIDE_WAVE = True
+# The first wave's network in segments of this many bits (0 = one network).
+WAVE_SEG = 64
 # Hand out the add's copies of J by when each comes free, not in turn.
 COPY_IDLE = True
 # The second wave too. Left serial, it follows the backward sweep down the word, and the rotation
@@ -236,17 +246,30 @@ M_FRESH = 0
 # Fewer fresh wires for P on a pebble tick: the pass holds a second decoded block across a block
 # edge, one wire more than elsewhere, so this keeps those ticks at the others' peak.
 P_FRESH_EDGE = 1
+# The compare's tree as two balanced trees, over its bits below this and the rest, joined at the
+# root (0 = one balanced tree).
+CMP_SPLIT = 14
 # Give every scratch wire from the prefixes to the compare by when it comes free under the tick model,
 # earliest first, instead of off the stack: a wire one tree has just freed is busy until that tree
 # ends, and handing it to a tree that could run beside it makes the second wait for the first.
 WIDE_IDLE = True
+# Hand out the tick's wires by when they come free from its first gate, not only from its prefixes.
+IDLE_FROM_START = True
+# Take the wire for one before p's mark is dropped (see tick).
+ONE_BEFORE_DROP = True
+# With WIDE_ASIDE, emit the trial's undo before the second chain.
+ASIDE_UNDO_FIRST = True
+# Turn three into the corner selector k0' k1' instead of clearing it (see tick).
+KUPD_FAST = True
+# With WIDE_ASIDE, the second chain on wires the tick has not touched yet.
+SECOND_FRESH = True
 # Run the trial chain on copies, beside the second chain.
-WIDE_ASIDE = False
+WIDE_ASIDE = True
 
 
 # alloc_after counts a wire as free in time when it is free within this many ticks of the gate's
 # other wires, and may take up to IDLE_FRESH wires the tick has not touched when none is.
-IDLE_SLACK = 0
+IDLE_SLACK = -8
 IDLE_FRESH = 0
 
 
@@ -567,7 +590,11 @@ def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, f
         for j in range(m):
             C.cx(U[j + 1], V[j])
         wave = _Gates()
-        adjacent_xor(wave, U)
+        # In segments bottom up, each a network on its own bits that reads the next one's lowest
+        # bit before that segment changes it, so the low bits need not wait for the high ones.
+        seg = WAVE_SEG or len(U)
+        for lo in range(0, len(U) - 1, seg):
+            adjacent_xor(wave, U[lo:min(lo + seg, len(U) - 1) + 1])
         _emit(C, wave.ops)
     else:
         for j in range(m):
@@ -1131,6 +1158,10 @@ class TwoBitMod(Mod):
         if WIDE_ADD and self.n > 3:
             sizes = _ramp_sizes(self.n - 1, WIDE_ADD, WIDE_ADD_RAMP)
             back = _ramp_sizes(self.n - 1, *WIDE_ADD_BACK) if WIDE_ADD_BACK else sizes
+            if WIDE_ADD_FSIZES and sum(WIDE_ADD_FSIZES) == self.n - 1:
+                sizes = list(WIDE_ADD_FSIZES)
+            if WIDE_ADD_BSIZES and sum(WIDE_ADD_BSIZES) == self.n - 1:
+                back = list(WIDE_ADD_BSIZES)
             temps = max(sum(r - 1 for r in sizes), sum(r - 1 for r in back))
             return add_or_shift_la(C, J, a, word, self.n, ntemps=max(temps, 1), ncopies=WIDE_ADD_COPIES,
                                    fsizes=sizes, bsizes=back)
@@ -1197,6 +1228,9 @@ class TwoBitMod(Mod):
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally."""
         n, f, w = self.n, self.f, self.window
         tick_start = len(C.prims)
+        early_idle = _Idle(C, tick_start) if IDLE_FROM_START and IDLE_WIRES else None
+        if early_idle:
+            C.alloc = early_idle.alloc
         g0, b = g
         (spill, high) = C.alloc(2)
         word = s + [spill, high]
@@ -1246,6 +1280,7 @@ class TwoBitMod(Mod):
             else:
                 for x in order:
                     C.cx(p, x)
+        early_one = C.alloc(1) if ONE_BEFORE_DROP else None
         self._drop_after_b1(C, prev, p)
         (l0,) = [pout] if pout is not None else C.alloc(1)
         C.ccx(g0, a[0], l0)
@@ -1254,7 +1289,8 @@ class TwoBitMod(Mod):
         k0, k1, k2 = word[n - 1:n + 2]
 
         # one = 0 only on a B1, which is the tick's inert lane. b holds J here, so this needs no CCX.
-        (one,) = C.alloc(1)
+        # With ONE_BEFORE_DROP it is not the wire p's drop frees, which is busy until that ends.
+        (one,) = early_one or C.alloc(1)
         if nxt is None:
             C.x(one)
         else:
@@ -1266,7 +1302,7 @@ class TwoBitMod(Mod):
             cswap(C, one, [k1], [nxt])
             C.x(one)
         ra, rb = self.run
-        idle = _Idle(C, tick_start) if IDLE_WIRES else None
+        idle = early_idle or (_Idle(C, tick_start) if IDLE_WIRES else None)
         if idle:
             C.alloc = idle.alloc
             C.alloc_after = idle.alloc_after
@@ -1348,24 +1384,32 @@ class TwoBitMod(Mod):
         if not aside:
             C.cx(sw, b)
             self._end(C, g0, b, sw)
-        C.ccx(three, e, k2)
-        C.ccx(k0, k1, three)
-        C.free([three])
-        C.ccx(k0, e, k1)
-        C.cx(e, k0)
-        if spare:
-            u = take()
-            C.cx(e, u)
-            C.ccx(P.top, u, e)
-            C.free([e])
-            e = u
-        C.ccx(k0, k1, one)
+        if KUPD_FAST and not spare:
+            # k' = k + e, and the second chain's corner selector is k0' k1' = k0 k1 ^ e k1 in the
+            # old bits: three holds k0 k1, so one CCX turns it into the corner selector, and three's
+            # wire becomes one. one's own wire holds 0 here and is freed instead of three's.
+            C.ccx(three, e, k2)
+            C.ccx(k1, e, three)
+            C.ccx(k0, e, k1)
+            C.cx(e, k0)
+            C.free([one])
+            one = three
+        else:
+            C.ccx(three, e, k2)
+            C.ccx(k0, k1, three)
+            C.free([three])
+            C.ccx(k0, e, k1)
+            C.cx(e, k0)
+            if spare:
+                u = take()
+                C.cx(e, u)
+                C.ccx(P.top, u, e)
+                C.free([e])
+                e = u
+            C.ccx(k0, k1, one)
         selectors, masks = [one, k0, k1, k2], [self.corner, f, 2 * f, 4 * f]
         if WIDE_LOW:
-            second = wide.LowAdd(C, L, selectors, masks, self.run, M.top, WIDE_LOW)
-            carry_out = second.top
-            if aside:
-                first.undo()
+            def clear_sc():
                 one_c, k0_c, k1_c, three_c = sc
                 # The copies hold the old one, k0, k1 and k0 k1; k1 took k0 e and k0 took e since.
                 C.ccx(k0_c, k1_c, three_c)
@@ -1379,6 +1423,23 @@ class TwoBitMod(Mod):
                     C.cx(b, one_c)
                     C.cx(g0, one_c)
                 C.free(sc)
+
+            if aside and ASIDE_UNDO_FIRST:
+                # The trial on copies unwinds beside the second chain; emitted first, its first
+                # reverse join reads M's top before the second chain's skip does, not after.
+                first.undo()
+            if aside and SECOND_FRESH and idle:
+                # The trial's unwinding has just freed its wires, busy until it ends: the second
+                # chain takes wires this tick has not touched, and P's write later takes those.
+                C.alloc = lambda k=1: [idle._untouched() for _ in range(k)]
+            second = wide.LowAdd(C, L, selectors, masks, self.run, M.top, WIDE_LOW)
+            if aside and SECOND_FRESH and idle:
+                C.alloc = idle.alloc
+            carry_out = second.top
+            if aside:
+                if not ASIDE_UNDO_FIRST:
+                    first.undo()
+                clear_sc()
                 # Until its write the second chain leaves L ^ K on each of these bits of L.
                 for i, c in zip(act, lc):
                     C.cx(L[i], c)
@@ -1438,7 +1499,7 @@ class TwoBitMod(Mod):
         cmp_a, cmp_b = a[1:], low[1:]
         width = len(cmp_a)
         if width and WIDE_CMP:
-            wide.gt_tree(C, cmp_a, cmp_b, k1, z, WIDE_CMP)
+            wide.gt_tree(C, cmp_a, cmp_b, k1, z, WIDE_CMP, split=CMP_SPLIT)
         elif width:
             (cin,) = C.alloc(1)
             # Each wire's last op in this tick so far: the compare hands the top block the wires that
@@ -1524,6 +1585,13 @@ class TwoBitMod(Mod):
         C.free_stack[:] = [wire for wire in saved_free if wire not in copies]
         sources, tree = [sw], []
         filled = 0
+        pairs = list(zip(a, s))
+        # The next tick starts on bit 0's swap: run it on sw before sw's fan, which waits on
+        # copy wires the compare frees late. Both only read sw, so they commute.
+        for u, v in pairs[:FINAL_EARLY]:
+            C.cx(v, u)
+            C.ccx(sw, u, v)
+            C.cx(v, u)
         while filled < len(copies):
             layer = []
             for source in sources:
@@ -1535,9 +1603,11 @@ class TwoBitMod(Mod):
                 tree.append((source, target))
                 layer.append(target)
             sources.extend(layer)
-        for j, (u, v) in enumerate(zip(a, s)):
+        for j, (u, v) in enumerate(pairs):
+            if j < FINAL_EARLY:
+                continue
             C.cx(v, u)
-            C.ccx(sources[j * len(sources) // n], u, v)
+            C.ccx(sources[j % len(sources) if FINAL_INTERLEAVE else j * len(sources) // n], u, v)
             C.cx(v, u)
         for source, target in reversed(tree):
             C.cx(source, target)
