@@ -171,7 +171,10 @@ def signed_digits(v):
 
 
 class SquareFold:
-    KEEP = 0
+    # Junk wires that keep leaf row carries, capped at what the leaves have. Each saves 2 CCX,
+    # one in the square and one in its reverse, and adds a wire at the square's peak, which is
+    # the circuit's: 1,048 puts secp256k1 at 4,096 wires.
+    KEEP = 1048
     def __init__(self, mod):
         self.mod, self.n = mod, mod.n
         self.f = f = (1 << mod.n) - mod.q
