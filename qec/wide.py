@@ -5,6 +5,10 @@ name as an output, and leaves every scratch wire it allocates clean.
 """
 
 
+# PrefixTree.write's mid hook after the carries' clear instead of before it.
+MID_AFTER_CARRIES = True
+
+
 def target(C, *inputs):
     """A clean wire for a gate that reads `inputs`: the circuit's alloc_after when it has one, which
     picks a wire that is free by the time the inputs are, else its next wire."""
@@ -60,32 +64,15 @@ def _spans(n, block):
     return out
 
 
-def _merge_by_time(nodes, ready, join=10):
-    """Join adjacent nodes into one tree, always the adjacent pair whose later member is ready
-    first, so that inputs that arrive late sit near the root. Any tree over the blocks in order
-    is exact; this only picks which."""
-    level = [dict(node, t=t) for node, t in zip(nodes, ready)]
-    while len(level) > 1:
-        i = min(range(len(level) - 1), key=lambda k: (max(level[k]["t"], level[k + 1]["t"]), k))
-        lo, hi = level[i], level[i + 1]
-        level[i:i + 2] = [{"g": hi["g"], "kids": (lo, hi), "t": max(lo["t"], hi["t"]) + join}]
-    return level[0]
-
-
-def _carry_out(T, A, B, alloc, block, ready=None, split=0):
+def _carry_out(T, A, B, alloc, block, split=0):
     """The carry out of A + B, no carry in, onto A's top wire. Blocks of `block` bits ripple in
     place as CDKM majorities, each from its own clean carry-in, which leaves A[i] ^ B[i] on B[i].
     A binary tree then joins the blocks: G_hi ^= P_hi G_lo, with P the AND of a block's B wires,
-    made only for a node that is some join's upper half. ready, when given, maps each wire of A
-    and B to when it arrives, and the tree is built by _merge_by_time instead of balanced."""
+    made only for a node that is some join's upper half. split, when given, is the bits (one, or a
+    tuple of cuts) below which the blocks get balanced trees of their own, joined nearer the root."""
     n = len(A)
     nodes = []
-    times = []
     for lo, hi in _spans(n, block):
-        if ready is not None:
-            # The ripple takes about 11 ticks a bit from the bit that arrives latest for its place.
-            times.append(max(max(ready.get(A[i], 0), ready.get(B[i], 0)) + 11 * (hi - i)
-                             for i in range(lo, hi)))
         cin = alloc()
         T.cx(A[lo], B[lo])
         T.cx(A[lo], cin)
@@ -105,15 +92,22 @@ def _carry_out(T, A, B, alloc, block, ready=None, split=0):
             level = nxt
         return level[0]
 
-    if ready is not None:
-        root = _merge_by_time(nodes, times)
-    elif split:
-        # Balanced trees over the blocks below and above split bits, joined at the root: the low
-        # bits arrive last, and only the low tree and one join stand between them and the root.
-        k = sum(1 for node in nodes if B.index(node["bits"][-1]) < split)
-        root = balanced(nodes[:k]) if k == len(nodes) else balanced(nodes[k:])
-        if 0 < k < len(nodes):
-            root = {"g": root["g"], "kids": (balanced(nodes[:k]), root)}
+    if split:
+        # Balanced trees over the blocks between the split bits, each joined to the tree of all
+        # above it: the low bits arrive last, and only their tree and a join or two stand between
+        # them and the root.
+        cuts = split if isinstance(split, tuple) else (split,)
+        segs, start = [], 0
+        for cut in cuts:
+            k = sum(1 for node in nodes if B.index(node["bits"][-1]) < cut)
+            if k > start:
+                segs.append(nodes[start:k])
+                start = k
+        if start < len(nodes):
+            segs.append(nodes[start:])
+        root = balanced(segs[-1])
+        for seg in reversed(segs[:-1]):
+            root = {"g": root["g"], "kids": (balanced(seg), root)}
     else:
         root = balanced(nodes)
 
@@ -143,8 +137,8 @@ def _carry_out(T, A, B, alloc, block, ready=None, split=0):
     return root["g"]
 
 
-def gt_tree(C, A, B, t, ctrl, block=4, ready=None, split=0):
-    """t ^= ctrl * [A > B], with A, B and ctrl restored: the carry out of A + ~B. ready: see
+def gt_tree(C, A, B, t, ctrl, block=4, split=0):
+    """t ^= ctrl * [A > B], with A, B and ctrl restored: the carry out of A + ~B. split: see
     _carry_out."""
     assert len(A) == len(B) >= 1 and ctrl not in (*A, *B, t)
     taken = []
@@ -157,7 +151,7 @@ def gt_tree(C, A, B, t, ctrl, block=4, ready=None, split=0):
     T = Tape()
     for x in B:
         T.x(x)
-    top = _carry_out(T, list(A), list(B), alloc, block, ready, split)
+    top = _carry_out(T, list(A), list(B), alloc, block, split)
     T.play(C)
     C.ccx(ctrl, top, t)
     T.play(C, reverse=True)
@@ -184,8 +178,8 @@ class PrefixTree:
         if h == 0:
             return
         self.chains, self.tree = Tape(), Tape()
-        for lo in range(0, h, block):
-            seg = self.bits[lo:lo + block]
+        for lo, hi in _spans(h, block):
+            seg = self.bits[lo:hi]
             q = [seg[0]]
             for x in seg[1:]:
                 t = self._alloc()
@@ -263,9 +257,14 @@ class PrefixTree:
             C.x(x)
         self.chains.play(C)
         self.tree.play(C)
-        if mid is not None:
+        if mid is not None and not MID_AFTER_CARRIES:
             mid(self.top)
         carries.play(C, reverse=True)
+        if mid is not None and MID_AFTER_CARRIES:
+            # The carries' clear reads t and the rebuilt tree below the root and writes only
+            # the carries, which mid does not read: the two commute, and mid then holds up
+            # only the tree's and chains' clears.
+            mid(self.top)
         self.tree.play(C, reverse=True)
         self.chains.play(C, reverse=True)
         for x in self.bits:
@@ -316,6 +315,14 @@ class LowAdd:
             self.blocks.append({"lo": lo, "hi": hi, "z": z, "pi": None, "cin": None})
         self.pis, self.join = Tape(), Tape()
         self.skip = None
+        self._chain_joins(a, b, w)
+        self.fan.play(C)
+        self.up.play(C)
+        self.pis.play(C)
+        self.join.play(C)
+
+    def _chain_joins(self, a, b, w):
+        L_, K = self.L, self.K
         carry = None
         for blk in self.blocks:
             lo, hi = blk["lo"], blk["hi"]
@@ -333,10 +340,6 @@ class LowAdd:
         if b == w and b > a:
             carry = self._skip(carry)
         self.top = carry
-        self.fan.play(C)
-        self.up.play(C)
-        self.pis.play(C)
-        self.join.play(C)
 
     def _alloc(self):
         (w,) = self.C.alloc(1)

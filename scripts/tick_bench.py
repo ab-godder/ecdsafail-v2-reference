@@ -72,6 +72,7 @@ def schedule(prims, nw):
 
 
 PHASES = []
+ORIG = []
 CMP_IO = {}
 
 
@@ -171,13 +172,13 @@ def post_pass(C, block, bounds):
     for g in range(len(ops) // 4):
         k, a, b, c = ops[4 * g:4 * g + 4]
         if k == 0:
-            body.append({"op": "X", "target": idx[a]})
+            body.append({"op": "X", "target": idx[a], "orig": g})
         elif k == 1:
-            body.append({"op": "CX", "control": idx[a], "target": idx[b]})
+            body.append({"op": "CX", "control": idx[a], "target": idx[b], "orig": g})
         elif k == 2:
-            body.append({"op": "CCX", "control1": idx[a], "control2": idx[b], "target": idx[c]})
+            body.append({"op": "CCX", "control1": idx[a], "control2": idx[b], "target": idx[c], "orig": g})
         else:
-            body.append({"op": "SWAP", "wire1": idx[a], "wire2": idx[b]})
+            body.append({"op": "SWAP", "wire1": idx[a], "wire2": idx[b], "orig": g})
     # each call's wire map: read off the expanded ops of that call
     calls = []
     for j in range(len(bounds) - 1):
@@ -208,6 +209,7 @@ def post_pass(C, block, bounds):
                 out.swap(m[r["wire1"]], m[r["wire2"]])
         nb.append(len(out.prims) // 4)
     nops = len(circ["definitions"][0]["operations"])
+    ORIG[:] = [r["orig"] for r in circ["definitions"][0]["operations"]]
     return out, nb, nops
 
 
@@ -257,7 +259,7 @@ def main():
         for g in path:
             j = max(i for i in range(N) if bounds[i] <= g)
             k, a, b, c = C.prims[4 * g:4 * g + 4]
-            ph = phase_of(g - bounds[j])
+            ph = phase_of(ORIG[g - bounds[j]] if ORIG else g - bounds[j])
             if verbose:
                 print(f"tick{j} op{g - bounds[j]:6d} {ph:10s} {names[k]:4s} {a:5d} {b:5d} {c:5d} end {end[g]:6d} +{end[g] - prev_end}")
             key = (j, ph)

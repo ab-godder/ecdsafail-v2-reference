@@ -23,14 +23,19 @@ Q = 2**256 - 2**32 - 977
 
 # The flags of b9b464a (PR #18), and the off value of each flag added since.
 REF = dict(WIDE_ADD=7, WIDE_ADD_RAMP=2, WIDE_ADD_COPIES=16, WIDE_ADD_BACK=(10, 1), WIDE_WAVE=False,
-           P_FAN=8, CMP_SPLIT=0, CMP_BY_TIME=False, FINAL_EARLY=0, M_EARLY=False, MERGE_NOT_J=False,
-           BACK_J_COPIES=False)
+           P_FAN=8, CMP_SPLIT=0, FINAL_EARLY=0, M_EARLY=False, WAVE_SEG=0, ONE_BEFORE_DROP=False,
+           IDLE_FROM_START=False, FINAL_INTERLEAVE=False, WIDE_M=3, WIDE_ADD_FSIZES=None,
+           WIDE_ADD_BSIZES=None, **{"wide.MID_AFTER_CARRIES": False})
+
+
+def _owner(name):
+    return (wide, name[5:]) if name.startswith("wide.") else (two_bit, name)
 
 
 def record(key, flags):
-    saved = {k: getattr(two_bit, k) for k in flags}
+    saved = {k: getattr(*_owner(k)) for k in flags}
     for k, v in flags.items():
-        setattr(two_bit, k, v)
+        setattr(*_owner(k), v)
     try:
         first, last, pebble, consume, produce = key
         mod = TwoBitMod(Q)
@@ -45,7 +50,7 @@ def record(key, flags):
         return C.record_shape(tick, sizes)
     finally:
         for k, v in saved.items():
-            setattr(two_bit, k, v)
+            setattr(*_owner(k), v)
 
 
 def run(block, init_vals, lanes):
@@ -64,7 +69,7 @@ def run(block, init_vals, lanes):
 def main():
     lanes = int(sys.argv[1]) if len(sys.argv) > 1 else 512
     rng = random.Random(int(sys.argv[2]) if len(sys.argv) > 2 else 1)
-    cur = {k: getattr(two_bit, k) for k in REF}
+    cur = {k: getattr(*_owner(k)) for k in REF}
     print("current flags:", {k: v for k, v in cur.items() if v != REF[k]})
     bad = 0
     for key in itertools.product([False, True], repeat=5):

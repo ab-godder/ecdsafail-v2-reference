@@ -45,27 +45,34 @@ def main():
     lam = float(sys.argv[3]) if len(sys.argv) > 3 else 0.3
     rng = random.Random(int(sys.argv[4]) if len(sys.argv) > 4 else 1)
     n = 255
-    if which == "fwd":
-        name = "WIDE_ADD_FSIZES"
-        cur = two_bit._ramp_sizes(n, two_bit.WIDE_ADD, two_bit.WIDE_ADD_RAMP)
-    else:
-        name = "WIDE_ADD_BSIZES"
-        cur = two_bit._ramp_sizes(n, *two_bit.WIDE_ADD_BACK)
-    setattr(two_bit, name, tuple(cur))
+    names = {"fwd": ["WIDE_ADD_FSIZES"], "back": ["WIDE_ADD_BSIZES"],
+             "both": ["WIDE_ADD_FSIZES", "WIDE_ADD_BSIZES"]}[which]
+    cur = {}
+    for name in names:
+        v = getattr(two_bit, name)
+        if not v:
+            v = (two_bit._ramp_sizes(n, two_bit.WIDE_ADD, two_bit.WIDE_ADD_RAMP) if name == "WIDE_ADD_FSIZES"
+                 else two_bit._ramp_sizes(n, *two_bit.WIDE_ADD_BACK))
+        cur[name] = list(v)
+        setattr(two_bit, name, tuple(v))
     t, c, w = measure()
     best = t + lam * c
     print("start", t, c, w, best, flush=True)
     for it in range(iters):
-        cand = mutate(cur, rng)
+        name = rng.choice(names)
+        cand = mutate(cur[name], rng)
         setattr(two_bit, name, tuple(cand))
         t2, c2, w2 = measure()
         score = t2 + lam * c2
         if w2 <= w and score <= best:
             if score < best:
-                print(it, t2, c2, round(score, 1), tuple(cand), flush=True)
-            cur, best = cand, score
-    setattr(two_bit, name, tuple(cur))
-    print("final", measure(), tuple(cur))
+                print(it, name, t2, c2, round(score, 1), tuple(cand), flush=True)
+            cur[name], best = cand, score
+        else:
+            setattr(two_bit, name, tuple(cur[name]))
+    for name in names:
+        print("final", name, tuple(cur[name]))
+    print("final", measure())
 
 
 if __name__ == "__main__":

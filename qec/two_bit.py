@@ -193,6 +193,9 @@ HIGH_CARRIERS = True
 # Put the final swap's sw and control copies on scratch the next tick reaches only after its add.
 LATE_FINAL_WIRES = True
 LATE_MIN_COPIES = 6
+# Deal the final swap's bits to sw's copies in turn instead of in slices: the compare restores a
+# block's bits together, and in a slice they would wait for one copy in turn.
+FINAL_INTERLEAVE = True
 # The final swap's first this many bits run on sw before its fan.
 FINAL_EARLY = 1
 # Copies of p for un-copying it from the word after the add (1 = none).
@@ -216,17 +219,13 @@ WIDE_ADD_COPIES = 24
 # Its chain costs 11 ticks a block against the forward chain's 7, so its blocks are larger.
 WIDE_ADD_BACK = (10, (2, 1))
 # Explicit block sizes, bottom up, for the forward and backward sweeps at the width they sum to.
-WIDE_ADD_FSIZES = None
-WIDE_ADD_BSIZES = None
+WIDE_ADD_FSIZES = (1, 1, 2, 2, 3, 4, 5, 6, 6, 8, 9, 9, 11, 10, 12, 9, 6, 14, 10, 8, 9, 10, 15, 9, 13, 9, 11, 11, 5, 8, 6, 6, 2, 3, 2)
+WIDE_ADD_BSIZES = (1, 1, 1, 1, 3, 4, 5, 3, 6, 6, 5, 8, 7, 7, 9, 5, 8, 10, 10, 10, 9, 9, 7, 10, 11, 11, 10, 11, 11, 10, 9, 8, 6, 7, 6, 4, 3, 2, 1)
 # Run the add's first CX wave through U as a log-depth network, and fan p into the word through
 # copies. The forward sweep's blocks then start together instead of one bit a tick.
 WIDE_WAVE = True
-# The add's last wave, V ^= ~J, joined to p's un-copy after the add (copies of p ^ ~J).
-MERGE_NOT_J = False
-# The second wave's V ^= ~J through this many copies of J of its own (0 = on J).
-BACK_J_FAN = 0
-# The second wave's V ^= ~J through J's copies, not all on J.
-BACK_J_COPIES = False
+# The first wave's network in segments of this many bits (0 = one network).
+WAVE_SEG = 64
 # Hand out the add's copies of J by when each comes free, not in turn.
 COPY_IDLE = True
 # The second wave too. Left serial, it follows the backward sweep down the word, and the rotation
@@ -235,11 +234,9 @@ WIDE_WAVE_BACK = False
 # The tick's P and M as wide.PrefixTree in blocks of this many bits (0 = PrefixR and Prefix). With
 # WIDE_P the first chain's carriers are clean wires, not borrowed H wires.
 WIDE_P = 4
-WIDE_M = 3
+WIDE_M = 5
 # The tick's two low chains as wide.LowAdd in blocks of this many bits (0 = _chain_up and _chain_down).
 WIDE_LOW = 3
-# Build the compare's tree by when its blocks are ready (wide._merge_by_time), not balanced.
-CMP_BY_TIME = False
 # The compare's tree as two balanced trees, over its bits below this and the rest, joined at the
 # root (0 = one balanced tree).
 CMP_SPLIT = 14
@@ -247,8 +244,12 @@ CMP_SPLIT = 14
 # earliest first, instead of off the stack: a wire one tree has just freed is busy until that tree
 # ends, and handing it to a tree that could run beside it makes the second wait for the first.
 WIDE_IDLE = True
+# Hand out the tick's wires by when they come free from its first gate, not only from its prefixes.
+IDLE_FROM_START = True
+# Take the wire for one before p's mark is dropped (see tick).
+ONE_BEFORE_DROP = True
 # M's write on carry wires allocated before P's write, so it need not wait for P's to end.
-M_EARLY = False
+M_EARLY = True
 # Run the trial chain on copies, beside the second chain.
 WIDE_ASIDE = False
 
@@ -531,7 +532,7 @@ class _LaTemps:
 
 
 def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, fsizes=None,
-                    bsizes=None, skip_not_j=False):
+                    bsizes=None):
     """k2f / k2b: number of 2-blocks in F / B (None = as many as fit); fsizes / bsizes, when given,
     F's / B's block sizes bottom up instead. Wires: cin, ntemps temps, carry and t for the top,
     ncopies copies of J: 1 + ntemps + 2 + ncopies (14 by default)."""
@@ -576,7 +577,11 @@ def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, f
         for j in range(m):
             C.cx(U[j + 1], V[j])
         wave = _Gates()
-        adjacent_xor(wave, U)
+        # In segments bottom up, each a network on its own bits that reads the next one's lowest
+        # bit before that segment changes it, so the low bits need not wait for the high ones.
+        seg = WAVE_SEG or len(U)
+        for lo in range(0, len(U) - 1, seg):
+            adjacent_xor(wave, U[lo:min(lo + seg, len(U) - 1) + 1])
         _emit(C, wave.ops)
     else:
         for j in range(m):
@@ -656,25 +661,10 @@ def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, f
             C.cx(copy(V[j]), V[j])                      # V ^= ~J through J's copies, which hold J
             C.x(V[j])
     else:
-        jw = C.alloc(BACK_J_FAN) if BACK_J_FAN else []
-        jtree = _la_fan(C, J, jw) if jw else []
         for j in reversed(range(m)):
             C.cx(U[j + 1], U[j])
             C.cx(U[j + 1], V[j])
-            if jw:
-                C.cx(jw[j * len(jw) // m], V[j])        # V ^= ~J through copies of J, which holds ~J
-            elif skip_not_j:
-                pass                                    # the caller applies V ^= ~J
-            elif BACK_J_COPIES:
-                C.cx(copy(V[j]), V[j])                  # V ^= ~J through J's copies, which hold J
-                C.x(V[j])
-            else:
-                C.cx(J, V[j])                           # V ^= ~J
-
-    if not (WIDE_WAVE and WIDE_WAVE_BACK) and jw:
-        for s_, t_ in reversed(jtree):
-            C.cx(s_, t_)
-        C.free(jw)
+            C.cx(J, V[j])                               # V ^= ~J
 
     def cswap(c, x, y):
         C.cx(y, x)
@@ -1148,7 +1138,7 @@ class TwoBitMod(Mod):
             self._mark_b1(C, prev, p)
             C.free([p])
 
-    def _add_or_shift(self, C, J, a, word, skip_not_j=False):
+    def _add_or_shift(self, C, J, a, word):
         """Off J add a >> 1; on J rotate word's low n+1 bits left."""
         if CDKM_ADD and self.n > 3:
             return add_or_shift_cdkm(C, J, a, word, self.n)
@@ -1161,7 +1151,7 @@ class TwoBitMod(Mod):
                 back = list(WIDE_ADD_BSIZES)
             temps = max(sum(r - 1 for r in sizes), sum(r - 1 for r in back))
             return add_or_shift_la(C, J, a, word, self.n, ntemps=max(temps, 1), ncopies=WIDE_ADD_COPIES,
-                                   fsizes=sizes, bsizes=back, skip_not_j=skip_not_j)
+                                   fsizes=sizes, bsizes=back)
         if LOOKAHEAD_ADD and self.n > 3:
             fsizes = _la_wide(self.n - 1, *LA_F_WIDE) if LA_F_WIDE else None
             bsizes = _la_wide(self.n - 1, *LA_B_WIDE) if LA_B_WIDE else None
@@ -1225,6 +1215,9 @@ class TwoBitMod(Mod):
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally."""
         n, f, w = self.n, self.f, self.window
         tick_start = len(C.prims)
+        early_idle = _Idle(C, tick_start) if IDLE_FROM_START and IDLE_WIRES else None
+        if early_idle:
+            C.alloc = early_idle.alloc
         g0, b = g
         (spill, high) = C.alloc(2)
         word = s + [spill, high]
@@ -1250,10 +1243,7 @@ class TwoBitMod(Mod):
         elif p is not None:
             for x in word:
                 C.cx(p, x)
-        # The add's last wave, word[:n - 1] ^= ~J, commutes with its rotation (each is the identity
-        # on the lanes where the other acts), so it can join p's un-copy below as one wave.
-        merge = MERGE_NOT_J and p is not None and P_FAN > 1 and WIDE_ADD and not WIDE_WAVE_BACK and n > 3
-        self._add_or_shift(C, b, a, word, skip_not_j=merge)
+        self._add_or_shift(C, b, a, word)
         add_end = len(C.prims)
         if p is not None:
             # The rotation finishes word's bits in mirror pairs from the middle out, so un-copy p in
@@ -1267,27 +1257,17 @@ class TwoBitMod(Mod):
                 # copy un-copying one contiguous slice, so the CX don't queue on one control.
                 pc = [p] + C.alloc(P_FAN - 1)
                 ptree = [(pc[j - (1 << (j.bit_length() - 1))], pc[j]) for j in range(1, len(pc))]
-                if merge:
-                    # p holds p ^ ~J while it is copied: b holds J again here.
-                    C.cx(b, p)
-                    C.x(p)
                 for src, dst in ptree:
                     C.cx(src, dst)
                 for i, x in enumerate(order):
                     C.cx(pc[i * len(pc) // len(order)], x)
                 for src, dst in reversed(ptree):
                     C.cx(src, dst)
-                if merge:
-                    C.x(p)
-                    C.cx(b, p)
-                    for x in word[n - 1:]:
-                        # These three took p ^ ~J from a copy, but owe only p.
-                        C.cx(b, x)
-                        C.x(x)
                 C.free(pc[1:])
             else:
                 for x in order:
                     C.cx(p, x)
+        early_one = C.alloc(1) if ONE_BEFORE_DROP else None
         self._drop_after_b1(C, prev, p)
         (l0,) = [pout] if pout is not None else C.alloc(1)
         C.ccx(g0, a[0], l0)
@@ -1296,7 +1276,8 @@ class TwoBitMod(Mod):
         k0, k1, k2 = word[n - 1:n + 2]
 
         # one = 0 only on a B1, which is the tick's inert lane. b holds J here, so this needs no CCX.
-        (one,) = C.alloc(1)
+        # With ONE_BEFORE_DROP it is not the wire p's drop frees, which is busy until that ends.
+        (one,) = early_one or C.alloc(1)
         if nxt is None:
             C.x(one)
         else:
@@ -1308,7 +1289,7 @@ class TwoBitMod(Mod):
             cswap(C, one, [k1], [nxt])
             C.x(one)
         ra, rb = self.run
-        idle = _Idle(C, tick_start) if IDLE_WIRES else None
+        idle = early_idle or (_Idle(C, tick_start) if IDLE_WIRES else None)
         if idle:
             C.alloc = idle.alloc
             C.alloc_after = idle.alloc_after
@@ -1439,7 +1420,12 @@ class TwoBitMod(Mod):
                 kept = set(low_kept) | {self.run[0]}
             chain = self._chain_up(C, L, selectors, masks, M, perch, alloc, kept, moves)
             carry_out = chain[w]
+        # M's write can start once the second chain's fixes give its carry in, but every wire free
+        # then is P's, busy until P's write ends: with M_EARLY it gets its own.
+        early_m = M_EARLY and isinstance(M, wide.PrefixTree)
+        m_wires = None
         if aside and isinstance(P, wide.PrefixTree):
+            m_wires = C.alloc(M.ncarries()) if early_m else None
             # e = carry_out * AND(old H) is also carry_out * AND(~new H), which P's write holds
             # before its last use of carry_out. Clearing e there keeps this CCX, and the trial's
             # unwinding before it, out of the write's way.
@@ -1450,11 +1436,7 @@ class TwoBitMod(Mod):
             else:
                 C.cx(carry_out, e)
             drop(e)
-            m_wires = None
-            if M_EARLY and isinstance(M, wide.PrefixTree):
-                # M's write can start once the second chain's fixes give its carry in, but every
-                # wire free then is P's, busy until P's write ends: give it its own.
-                m_wires = C.alloc(M.ncarries())
+            m_wires = C.alloc(M.ncarries()) if early_m else None
             P.write(carry_out)
         if idle and RESTORE_IDLE:
             # M's restore would take the wire chain[b]'s drop has just freed; take the one free first.
@@ -1485,9 +1467,7 @@ class TwoBitMod(Mod):
         cmp_a, cmp_b = a[1:], low[1:]
         width = len(cmp_a)
         if width and WIDE_CMP:
-            ready = idle.ready() if CMP_BY_TIME and idle else None
-            wide.gt_tree(C, cmp_a, cmp_b, k1, z, WIDE_CMP, ready=dict(ready) if ready else None,
-                         split=CMP_SPLIT)
+            wide.gt_tree(C, cmp_a, cmp_b, k1, z, WIDE_CMP, split=CMP_SPLIT)
         elif width:
             (cin,) = C.alloc(1)
             # Each wire's last op in this tick so far: the compare hands the top block the wires that
@@ -1595,7 +1575,7 @@ class TwoBitMod(Mod):
             if j < FINAL_EARLY:
                 continue
             C.cx(v, u)
-            C.ccx(sources[j * len(sources) // n], u, v)
+            C.ccx(sources[j % len(sources) if FINAL_INTERLEAVE else j * len(sources) // n], u, v)
             C.cx(v, u)
         for source, target in reversed(tree):
             C.cx(source, target)
