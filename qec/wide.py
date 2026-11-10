@@ -212,27 +212,21 @@ class PrefixTree:
     def restore(self):
         pass
 
-    def ncarries(self):
-        """Clean wires write takes for its carries."""
-        return max(len(self.blocks) - 1, 0)
-
-    def write(self, t, mid=None, carry_wires=None):
+    def write(self, t, mid=None):
         """mid(z), when given, runs while z holds AND(~new bits), before t's last use: t * z is
-        the carry out of the bits, t * AND(old bits). carry_wires, when given, are clean wires
-        for the carries (ncarries of them), taken in place of the allocator's."""
+        the carry out of the bits, t * AND(old bits)."""
         C = self.C
         if not self.bits:
             return
         carries = Tape()
         made = []
-        pool = list(carry_wires) if carry_wires is not None else None
 
         def down(node, c):
             if node["kids"] is None:
                 node["cin"] = c
                 return
             lo, hi = node["kids"]
-            ch = pool.pop(0) if pool is not None else target(C, c, lo["a"])
+            ch = target(C, c, lo["a"])
             made.append(ch)
             carries.ccx(c, lo["a"], ch)
             C.ccx(c, lo["a"], ch)

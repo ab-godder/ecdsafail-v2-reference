@@ -234,7 +234,7 @@ WIDE_WAVE_BACK = False
 # The tick's P and M as wide.PrefixTree in blocks of this many bits (0 = PrefixR and Prefix). With
 # WIDE_P the first chain's carriers are clean wires, not borrowed H wires.
 WIDE_P = 4
-WIDE_M = 5
+WIDE_M = 3
 # The tick's two low chains as wide.LowAdd in blocks of this many bits (0 = _chain_up and _chain_down).
 WIDE_LOW = 3
 # The compare's tree as two balanced trees, over its bits below this and the rest, joined at the
@@ -248,15 +248,19 @@ WIDE_IDLE = True
 IDLE_FROM_START = True
 # Take the wire for one before p's mark is dropped (see tick).
 ONE_BEFORE_DROP = True
-# M's write on carry wires allocated before P's write, so it need not wait for P's to end.
-M_EARLY = True
+# With WIDE_ASIDE, emit the trial's undo before the second chain.
+ASIDE_UNDO_FIRST = True
+# Turn three into the corner selector k0' k1' instead of clearing it (see tick).
+KUPD_FAST = True
+# With WIDE_ASIDE, the second chain on wires the tick has not touched yet.
+SECOND_FRESH = True
 # Run the trial chain on copies, beside the second chain.
-WIDE_ASIDE = False
+WIDE_ASIDE = True
 
 
 # alloc_after counts a wire as free in time when it is free within this many ticks of the gate's
 # other wires, and may take up to IDLE_FRESH wires the tick has not touched when none is.
-IDLE_SLACK = 0
+IDLE_SLACK = -8
 IDLE_FRESH = 0
 
 
@@ -1371,24 +1375,32 @@ class TwoBitMod(Mod):
         if not aside:
             C.cx(sw, b)
             self._end(C, g0, b, sw)
-        C.ccx(three, e, k2)
-        C.ccx(k0, k1, three)
-        C.free([three])
-        C.ccx(k0, e, k1)
-        C.cx(e, k0)
-        if spare:
-            u = take()
-            C.cx(e, u)
-            C.ccx(P.top, u, e)
-            C.free([e])
-            e = u
-        C.ccx(k0, k1, one)
+        if KUPD_FAST and not spare:
+            # k' = k + e, and the second chain's corner selector is k0' k1' = k0 k1 ^ e k1 in the
+            # old bits: three holds k0 k1, so one CCX turns it into the corner selector, and three's
+            # wire becomes one. one's own wire holds 0 here and is freed instead of three's.
+            C.ccx(three, e, k2)
+            C.ccx(k1, e, three)
+            C.ccx(k0, e, k1)
+            C.cx(e, k0)
+            C.free([one])
+            one = three
+        else:
+            C.ccx(three, e, k2)
+            C.ccx(k0, k1, three)
+            C.free([three])
+            C.ccx(k0, e, k1)
+            C.cx(e, k0)
+            if spare:
+                u = take()
+                C.cx(e, u)
+                C.ccx(P.top, u, e)
+                C.free([e])
+                e = u
+            C.ccx(k0, k1, one)
         selectors, masks = [one, k0, k1, k2], [self.corner, f, 2 * f, 4 * f]
         if WIDE_LOW:
-            second = wide.LowAdd(C, L, selectors, masks, self.run, M.top, WIDE_LOW)
-            carry_out = second.top
-            if aside:
-                first.undo()
+            def clear_sc():
                 one_c, k0_c, k1_c, three_c = sc
                 # The copies hold the old one, k0, k1 and k0 k1; k1 took k0 e and k0 took e since.
                 C.ccx(k0_c, k1_c, three_c)
@@ -1402,6 +1414,23 @@ class TwoBitMod(Mod):
                     C.cx(b, one_c)
                     C.cx(g0, one_c)
                 C.free(sc)
+
+            if aside and ASIDE_UNDO_FIRST:
+                # The trial on copies unwinds beside the second chain; emitted first, its first
+                # reverse join reads M's top before the second chain's skip does, not after.
+                first.undo()
+            if aside and SECOND_FRESH and idle:
+                # The trial's unwinding has just freed its wires, busy until it ends: the second
+                # chain takes wires this tick has not touched, and P's write later takes those.
+                C.alloc = lambda k=1: [idle._untouched() for _ in range(k)]
+            second = wide.LowAdd(C, L, selectors, masks, self.run, M.top, WIDE_LOW)
+            if aside and SECOND_FRESH and idle:
+                C.alloc = idle.alloc
+            carry_out = second.top
+            if aside:
+                if not ASIDE_UNDO_FIRST:
+                    first.undo()
+                clear_sc()
                 # Until its write the second chain leaves L ^ K on each of these bits of L.
                 for i, c in zip(act, lc):
                     C.cx(L[i], c)
@@ -1420,12 +1449,7 @@ class TwoBitMod(Mod):
                 kept = set(low_kept) | {self.run[0]}
             chain = self._chain_up(C, L, selectors, masks, M, perch, alloc, kept, moves)
             carry_out = chain[w]
-        # M's write can start once the second chain's fixes give its carry in, but every wire free
-        # then is P's, busy until P's write ends: with M_EARLY it gets its own.
-        early_m = M_EARLY and isinstance(M, wide.PrefixTree)
-        m_wires = None
         if aside and isinstance(P, wide.PrefixTree):
-            m_wires = C.alloc(M.ncarries()) if early_m else None
             # e = carry_out * AND(old H) is also carry_out * AND(~new H), which P's write holds
             # before its last use of carry_out. Clearing e there keeps this CCX, and the trial's
             # unwinding before it, out of the write's way.
@@ -1436,13 +1460,12 @@ class TwoBitMod(Mod):
             else:
                 C.cx(carry_out, e)
             drop(e)
-            m_wires = C.alloc(M.ncarries()) if early_m else None
             P.write(carry_out)
         if idle and RESTORE_IDLE:
             # M's restore would take the wire chain[b]'s drop has just freed; take the one free first.
             M.alloc_restore = lambda: idle.alloc(1)[0]
         if WIDE_LOW and isinstance(M, wide.PrefixTree):
-            second.write(lambda c, mid: M.write(c, mid, carry_wires=m_wires))
+            second.write(lambda c, mid: M.write(c, mid))
         elif WIDE_LOW:
             second.write(lambda c, mid: (mid(M.top), M.restore(), M.write(c)))
         else:

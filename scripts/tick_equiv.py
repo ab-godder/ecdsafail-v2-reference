@@ -23,8 +23,8 @@ Q = 2**256 - 2**32 - 977
 
 # The flags of b9b464a (PR #18), and the off value of each flag added since.
 REF = dict(WIDE_ADD=7, WIDE_ADD_RAMP=2, WIDE_ADD_COPIES=16, WIDE_ADD_BACK=(10, 1), WIDE_WAVE=False,
-           P_FAN=8, CMP_SPLIT=0, FINAL_EARLY=0, M_EARLY=False, WAVE_SEG=0, ONE_BEFORE_DROP=False,
-           IDLE_FROM_START=False, FINAL_INTERLEAVE=False, WIDE_M=3, WIDE_ADD_FSIZES=None,
+           P_FAN=8, CMP_SPLIT=0, FINAL_EARLY=0, WAVE_SEG=0, ONE_BEFORE_DROP=False,
+           IDLE_FROM_START=False, FINAL_INTERLEAVE=False, WIDE_ASIDE=False, ASIDE_UNDO_FIRST=False, SECOND_FRESH=False, IDLE_SLACK=0, KUPD_FAST=False, WIDE_M=3, WIDE_ADD_FSIZES=None,
            WIDE_ADD_BSIZES=None, **{"wide.MID_AFTER_CARRIES": False})
 
 
