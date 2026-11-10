@@ -163,9 +163,10 @@ TICK0_COPIES = 31
 # they cost no wire.
 RING_BORROW = 300
 # The u6 step's copies of g0 and of g1 on wires of their own, this many each, instead of on the
-# ring: the copies then wait for no tree temp and no tree temp waits for them. The Euclid passes run
-# about 274 wires below the circuit's peak; these and the TWO_EARLY wires take 274.
-U6_OWN_COPIES = 72
+# ring: the copies then wait for no tree temp and no tree temp waits for them. The Euclid steps ran
+# 274 wires below the circuit's peak; these, the TWO_EARLY wires and the peek take 245, which keeps
+# the steps at 1,526 wires, under a peak that the Bezout tick or the square could lower to ~1,530.
+U6_OWN_COPIES = 58
 U6_KEEP_COPIES = True
 U6_RING_SELECT = True
 # Compute a step's second-strip flag `two` at the step's start instead of after its shared
@@ -175,6 +176,8 @@ U6_RING_SELECT = True
 # flag does not wait for the previous step's uncompute; the copies are shared.
 TWO_EARLY = True
 TWO_COPIES = 200
+# Wires for the Euclid pass's B1 marks; 0 keeps the one mark wire.
+MARK_POOL = 8
 
 
 def _ring_size(w, avail):
@@ -270,7 +273,8 @@ def shared_difference_u6(C, U, V, g0, g1, ring, peek=None, off=None):
             extra += [(G0[j % r], R0[j]), (G1[j % r], R1[j])]
         for a, t in extra:
             C.cx(a, t)
-        S0, S1 = G0 + R0, G1 + R1
+        # Low bits on the ring copies: each own copy then serves fewer bits as well as its fans.
+        S0, S1 = R0 + G0, R1 + G1
     s = len(S0)
     for i in range(w):
         k = cin if i == 0 else U[i - 1]
@@ -314,8 +318,9 @@ def shared_difference_u6(C, U, V, g0, g1, ring, peek=None, off=None):
 
 
 # Widths at which the step uses the in-place ripple below instead of a ring variant: there it has
-# fewer ticks and fewer CCX than u1 and u6 (measured in isolation, w = 2..12).
-RIPPLE_MAX_W = 12
+# fewer CCX than u1 and u6. Up to 12 it also had fewer ticks in isolation; in the pass, with the
+# early second strip, u6 is faster from 9 on (about 300 ticks a pass, 38 CCX).
+RIPPLE_MAX_W = 8
 
 
 def shared_difference_ripple(C, U, V, g0, g1, ring):
@@ -382,7 +387,7 @@ HAND_OFF_MARK = True
 # Run the Bezout pass's block codec calls on the free wires freed longest ago.
 CODEC_ASIDE = True
 # The Euclid pass's back-to-back block encodes take their clean wires from this many sets in turn.
-ENCODE_SETS = 3
+ENCODE_SETS = 6
 
 
 def _aside(C, fn):
@@ -740,19 +745,36 @@ class DialogMultiplier:
         T, swept, clean = self.iters, self.swept, []
         both = None
 
-        def mark(k):
+        def mark(k, both):
             self.C.x(G[2 * k])
             self.C.x(G[2 * k - 2])
             self.C.ccx(G[2 * k], G[2 * k - 2], both)
             self.C.x(G[2 * k - 2])
             self.C.x(G[2 * k])
 
-        if swept and T >= 2:
+        # With MARK_POOL, each B1 mark gets a wire of its own from a pool, made a few cells ahead
+        # and cleared right after its B1 step, instead of one wire turned from each mark into the
+        # next: the B1 steps then chain only through the b wires, not through the mark wire too.
+        pool_m = self.C.alloc(min(MARK_POOL, T - 1)) if swept and T >= 2 and MARK_POOL else []
+        marks = {}
+        if pool_m:
+            for k in range(T - 1, max(0, T - 1 - len(pool_m)), -1):
+                marks[k] = pool_m[k % len(pool_m)]
+                mark(k, marks[k])
+        elif swept and T >= 2:
             (both,) = self.C.alloc(1)
-            mark(T - 1)
+            mark(T - 1, both)
         for i in range(T - 1, -1, -1):
             cswap(self.C, G[2 * i], E, [G[2 * i + 1]])
-            if swept and i + 1 < T:
+            if swept and i + 1 < T and pool_m:
+                k = i + 1
+                self._b1_step(G, k, marks[k])
+                mark(k, marks[k])
+                wire = marks.pop(k)
+                if k - len(pool_m) >= 1:
+                    marks[k - len(pool_m)] = wire
+                    mark(k - len(pool_m), wire)
+            elif swept and i + 1 < T:
                 k = i + 1
                 self._b1_step(G, k, both)
                 if k >= 2:
@@ -763,7 +785,7 @@ class DialogMultiplier:
                     self.C.x(G[2 * k - 2])
                     self.C.cx(G[2 * k - 4], G[2 * k])
                 else:
-                    mark(1)
+                    mark(1, both)
             done = i + 1 if swept else i
             if done % TICKS == 0 and done // TICKS < self.blocks:
                 # Rotate the encoder's clean wires, so that a block's encode overlaps the next ones.
@@ -772,6 +794,8 @@ class DialogMultiplier:
                 self.C.free(hold)
         if both is not None:
             self.C.free([both])
+        assert not marks
+        self.C.free(pool_m)
         if swept and self.blocks:
             clean.extend(self._encode(G, 0, swept))
         self.C.free(E)
