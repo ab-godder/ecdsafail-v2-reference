@@ -162,6 +162,17 @@ TICK0_COPIES = 31
 # of a full ring take 42 at most, and the pass runs further than that below the circuit's peak, so
 # they cost no wire.
 RING_BORROW = 300
+# The u6 step's copies of g0 and of g1 on wires of their own, this many each, instead of on the
+# ring: the copies then wait for no tree temp and no tree temp waits for them. The Euclid passes run
+# about 274 wires below the circuit's peak; these and the TWO_EARLY wires take 274.
+U6_OWN_COPIES = 72
+# Compute a step's second-strip flag `two` at the step's start instead of after its shared
+# difference, and fan it onto pass-level copies while the shared difference runs. two = 1 implies
+# g0 = 0, and the shared difference is the identity when g0 = 0, so `two` read from V[1] before it
+# equals `two` read from V[0] after the strip. The pass alternates two wires for `two`, so a step's
+# flag does not wait for the previous step's uncompute; the copies are shared.
+TWO_EARLY = True
+TWO_COPIES = 200
 
 
 def _ring_size(w, avail):
@@ -214,7 +225,12 @@ def shared_difference_u6(C, U, V, g0, g1, ring):
     lay = ring_layout_u6(len(ring))
     assert w >= 2 and lay is not None
     r, _ = lay
-    G0, G1 = list(ring[:r]), list(ring[r:2 * r])
+    if U6_OWN_COPIES:
+        r = min(w, U6_OWN_COPIES)
+        own = C.alloc(2 * r)
+        G0, G1 = own[:r], own[r:]
+    else:
+        G0, G1 = list(ring[:r]), list(ring[r:2 * r])
     (cin,) = C.alloc(1)
     for wire in V:
         C.x(wire)
@@ -247,6 +263,8 @@ def shared_difference_u6(C, U, V, g0, g1, ring):
     _unfan(C, g1, G1)
     _unfan(C, g0, G0)
     C.free([cin])
+    if U6_OWN_COPIES:
+        C.free(own)
 
 
 # Widths at which the step uses the in-place ripple below instead of a ring variant: there it has
@@ -486,6 +504,43 @@ class DialogMultiplier:
         if (w, k) not in self._euclid_steps:
             C = self.C
 
+            def step_early(U, V, E, cell, cp, TT):
+                # The step below with TWO_EARLY: TT is `two` and its copies, all clean.
+                g0, b = cell
+                offset = E[0]
+                C.cx(offset, V[0])
+                C.cx(V[0], g0)
+                two, tw = TT[0], list(TT[1:])
+                C.cx(offset, V[1])
+                C.x(g0)
+                C.x(V[1])
+                C.ccx(g0, V[1], two)
+                C.x(V[1])
+                C.x(g0)
+                C.cx(offset, V[1])
+                L = w - 1
+                _fanout(C, two, tw)
+                self._shared_difference(U[:w], V[:w], g0, b, list(cp))
+                V[:] = V[1:] + V[:1]
+                cswap(C, g0, [offset], [b])
+                ctl = [two] + tw
+                Vr = V[:L]
+                for p in range(L // 2):
+                    cswap(C, ctl[p % len(ctl)], [Vr[p]], [Vr[L - 1 - p]])
+                for p in range((L - 1) // 2):
+                    cswap(C, ctl[p % len(ctl)], [Vr[p]], [Vr[L - 2 - p]])
+                # The stripped bit, offset when two = 1, now sits at V[L - 1].
+                C.ccx(two, offset, V[L - 1])
+                C.cx(two, b)
+                _unfanout(C, two, tw)
+                C.x(g0)
+                C.ccx(g0, b, two)
+                C.x(g0)
+
+            if k and isinstance(k, tuple):
+                self._euclid_steps[w, k] = C.record_shape(step_early, [w, w, 1, 2, k[0], k[1]])
+                return self._euclid_steps[w, k]
+
             def step(U, V, E, cell, cp=()):
                 g0, b = cell
                 offset = E[0]
@@ -589,6 +644,9 @@ class DialogMultiplier:
         lend = U[n - self.u_lent:]
         E = self.C.alloc(1)
         k = self._tick0_scratch()
+        if TWO_EARLY:
+            two_wires = self.C.alloc(2)
+            tw_wires = self.C.alloc(min(TWO_COPIES, (n - 1) // 2 - 1))
         for i in range(self.iters):
             w = self.widths[i]
             assert len(V) == w and len(available) >= 2
@@ -604,7 +662,12 @@ class DialogMultiplier:
                 borrow = (self.C.alloc(full - len(available))
                           if WIDE_RING and k < full <= len(available) + RING_BORROW else [])
                 ring = available + borrow if borrow else available[:k]
-                self.C.apply(self._euclid_step(w, len(ring)), [U[:w], V, E, cell, ring])
+                if TWO_EARLY and w > RIPPLE_MAX_W and ring_layout_u6(len(ring)) is not None:
+                    ntw = min(TWO_COPIES, (w - 1) // 2 - 1)
+                    TT = [two_wires[i % 2]] + tw_wires[:ntw]
+                    self.C.apply(self._euclid_step(w, (len(ring), len(TT))), [U[:w], V, E, cell, ring, TT])
+                else:
+                    self.C.apply(self._euclid_step(w, len(ring)), [U[:w], V, E, cell, ring])
                 self.C.free(borrow)
                 self.C.free(hold)
             G.extend(cell)
@@ -616,6 +679,8 @@ class DialogMultiplier:
             # w <= next_width, so U's wires from next_width up are zero for the rest of the pass.
             available.extend(reversed([u for u in U[next_width:w] if u in lend]))
         assert len(V) == self.pass_tail_width and not available
+        if TWO_EARLY:
+            self.C.free(two_wires + tw_wires)
         # Sweep down, coding each block as it finishes. The offset sweep leaves b on a
         # no-subtract tick alone. On the merged path the B1 sweep follows one cell behind it,
         # so a block is coded only after the B1 step that reads its bottom cell.
