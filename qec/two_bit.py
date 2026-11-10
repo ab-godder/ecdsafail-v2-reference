@@ -223,9 +223,11 @@ class TwoBitMod(Mod):
             read.update(on)
         return perch
 
-    def _chain_up(self, C, L, selectors, masks, M, perch, take, kept=None, moves=None):
+    def _chain_up(self, C, L, selectors, masks, M, perch, take, kept=None, moves=None,
+                  bottom=None):
         """kept, when given, names the low carries that stay. Each other one is cleared once the
-        next kept carry is built, so only kept carries are live above it; _chain_down rebuilds them."""
+        next kept carry is built, so only kept carries are live above it; _chain_down rebuilds them.
+        bottom, when given, is a wire that already holds the bottom carry chain[1]."""
         a, b, w = *self.run, self.window
         chain = {0: None}
 
@@ -243,6 +245,9 @@ class TwoBitMod(Mod):
                 _selected_carry(C, L[i], selectors, masks, i, chain[i], chain[i + 1])
 
         start = 0
+        if bottom is not None:
+            assert kept is None and moves is None and a >= 1 and 0 not in perch
+            chain[1], start = bottom, 1
         if moves is not None:
             for j in moves:
                 if j in chain:
@@ -498,13 +503,17 @@ class TwoBitMod(Mod):
         C.ccx(k0, k1, three)
         selectors = [one, k0, k1, three]
         masks = [f, f ^ 2 * f, f ^ 3 * f, self.corner ^ 4 * f]
-        chain = self._chain_up(C, L, selectors, masks, M, {}, take)
+        # The first chain's bottom carry, l0*(one ^ K0), sits on a clean wire, not a borrowed H
+        # wire, so that it is a true carry on every lane and can become the second chain's.
+        (c1,) = C.alloc(1)
+        _selected_carry(C, L[0], selectors, masks, 0, None, c1)
+        chain = self._chain_up(C, L, selectors, masks, M, {}, take, bottom=c1)
         (e,) = C.alloc(1)
         if H:
             C.ccx(P.top, chain[w], e)
         else:
             C.cx(chain[w], e)
-        self._chain_down(C, L, selectors, masks, M, {}, chain, drop, False)
+        self._chain_down(C, L, selectors, masks, M, {}, chain, drop, False, keep=1)
         if nxt is None:
             C.x(one)
         else:
@@ -518,10 +527,14 @@ class TwoBitMod(Mod):
         one = three
         C.ccx(k0, e, k1)
         C.cx(e, k0)
+        # c1 = l0*(one ^ K0) becomes the second chain's l0*k0 = l0*(K0 ^ e). l0 = 1 only off B1,
+        # where one = 1, so the change is l0*(1 ^ e).
+        C.cx(l0, c1)
+        C.ccx(l0, e, c1)
         selectors, masks = [one, k0, k1, k2], [self.corner, f, 2 * f, 4 * f]
         perch = self._perches(selectors, masks)
         # Every low carry stays on its own wire until its fall, and e stays on its own wire.
-        chain = self._chain_up(C, L, selectors, masks, M, perch, alloc)
+        chain = self._chain_up(C, L, selectors, masks, M, perch, alloc, bottom=c1)
         if H:
             C.ccx(P.top, chain[w], e)
         else:
