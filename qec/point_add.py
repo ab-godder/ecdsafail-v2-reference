@@ -748,11 +748,15 @@ class ControlledPointAdd:
         if self._square_blk is None:
             fold = SquareFold(mod)
             self._square_blk = C.record_shape(lambda y, j: fold.compute(C, y, j), [n, fold.junk])
-            self._modadd_blk = C.record_shape(lambda k, a, b: fold.modadd(C, a, b, k[0]), [1, n, n])
+            self._square_zeros = fold.zero_slots
+            self._modadd_blk = C.record_shape(lambda k, a, b, z: fold.modadd(C, a, b, k[0], z),
+                                              [1, n, n, len(fold.zero_slots)])
             self._square_junk = fold.junk
         J = C.alloc(self._square_junk)
         C.apply(self._square_blk, [Yr, J])
-        C.apply(self._modadd_blk, [[gen], J[:n], Xr], inverse=True)
+        # The square leaves these junk wires 0, so the modadd's ancillas can borrow them.
+        C.apply(self._modadd_blk, [[gen], J[:n], Xr, [J[i] for i in self._square_zeros]],
+                inverse=True)
         C.apply(self._square_blk, [Yr, J], inverse=True)
         C.free(J)
 

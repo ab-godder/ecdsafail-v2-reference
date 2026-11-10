@@ -1,7 +1,7 @@
 """Gate-level check of the square path X -= gen * Y^2 mod q at several KEEP values.
 
-Builds the square block, the gen-controlled modadd and the square's reverse exactly as
-ControlledPointAdd._square_mulsub does, and checks on every lane that X becomes
+Builds the square block, the gen-controlled modadd (borrowing the junk wires the square
+leaves 0) and the square's reverse exactly as ControlledPointAdd._square_mulsub does, and checks on every lane that X becomes
 (X - gen*Y^2) mod q, that gen and Y are unchanged and that every other wire is zero. Small
 widths run every (gen, Y, X) with Y any n-bit value and X canonical; larger widths run every Y
 (or random Y) with random canonical X. KEEP sweeps no kept carries, a few, part of the leaves'
@@ -61,10 +61,11 @@ def run(q, keep, lanes):
     (gen,) = C.alloc(1)
     Y, X = C.alloc(n), C.alloc(n)
     sq = C.record_shape(lambda y, j: fold.compute(C, y, j), [n, fold.junk])
-    madd = C.record_shape(lambda k, a, b: fold.modadd(C, a, b, k[0]), [1, n, n])
+    zeros = fold.zero_slots
+    madd = C.record_shape(lambda k, a, b, z: fold.modadd(C, a, b, k[0], z), [1, n, n, len(zeros)])
     J = C.alloc(fold.junk)
     C.apply(sq, [Y, J])
-    C.apply(madd, [[gen], J[:n], X], inverse=True)
+    C.apply(madd, [[gen], J[:n], X, [J[i] for i in zeros]], inverse=True)
     C.apply(sq, [Y, J], inverse=True)
     C.free(J)
     k = len(lanes)

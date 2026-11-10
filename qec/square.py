@@ -116,7 +116,7 @@ def karatsuba_carries(w, thr):
     return karatsuba_carries(h, thr) + karatsuba_carries(w - h, thr) + karatsuba_carries(h + 1, thr)
 
 
-def _karatsuba(C, Y, Q, J, thr, kind="R", K=None):
+def _karatsuba(C, Y, Q, J, thr, kind="R", K=None, Z=None):
     """Q = R(Y) = Y*(2^w - Y) (kind R) or T(Y) = Y*(2^w - 1 - Y) (kind T) on 2w clean wires.
 
     Y = A + 2^h*B with h = ceil(w/2), m = w - h, and S = A + B on ws = h + 1 bits. Then
@@ -126,7 +126,9 @@ def _karatsuba(C, Y, Q, J, thr, kind="R", K=None):
     where ~S = 2^ws - 1 - S, so R(~S) = T(S) - S + 2^ws - 1. V is A*~B + B*~A, plus B for R,
     so 0 <= V < 2^(w + 1), and V is formed mod 2^(w + 1). R(A) and T(B) go straight onto Q's
     halves; S and the S child's output take wires from J, a list of clean junk wires, and
-    keep values fixed by Y. Leaves of width at most thr are the XOR rows."""
+    keep values fixed by Y. Leaves of width at most thr are the XOR rows. Z, if given, gets the
+    S child's output wires above V that its value leaves 0: R(x) <= 2^(2ws - 2) clears the top
+    bit and T(x) < 2^(2ws - 2) the top two, and nothing above V is written after the child."""
     w = len(Y)
     if w <= thr:
         _rows(C, Y, Q, kind == "R", K)
@@ -134,8 +136,8 @@ def _karatsuba(C, Y, Q, J, thr, kind="R", K=None):
     h = (w + 1) // 2
     m = w - h
     A, B = Y[:h], Y[h:]
-    _karatsuba(C, A, Q[:2 * h], J, thr, kind, K)
-    _karatsuba(C, B, Q[2 * h:], J, thr, "T", K)
+    _karatsuba(C, A, Q[:2 * h], J, thr, kind, K, Z)
+    _karatsuba(C, B, Q[2 * h:], J, thr, "T", K, Z)
     ws = h + 1
     S = [J.pop(0) for _ in range(ws)]
     for x, s in zip(A, S):
@@ -147,7 +149,10 @@ def _karatsuba(C, Y, Q, J, thr, kind="R", K=None):
     if kind == "T":
         for x in S:
             C.x(x)
-    _karatsuba(C, S, W, J, thr, "R" if kind == "T" else "T", K)
+    child = "R" if kind == "T" else "T"
+    _karatsuba(C, S, W, J, thr, child, K, Z)
+    if Z is not None:
+        Z.extend(W[max(w + 1, 2 * ws - (1 if child == "R" else 2)):])
     if kind == "T":
         for x in S:
             C.x(x)
@@ -186,8 +191,8 @@ def signed_digits(v):
 class SquareFold:
     # Junk wires that keep leaf row carries, capped at what the leaves have. Each saves 2 CCX,
     # one in the square and one in its reverse, and adds a wire at the square's peak, which is
-    # the circuit's: 636 puts secp256k1 at 4,096 wires.
-    KEEP = 636
+    # the circuit's: 650 puts secp256k1 at 4,096 wires.
+    KEEP = 650
     def __init__(self, mod):
         self.mod, self.n = mod, mod.n
         self.f = f = (1 << mod.n) - mod.q
@@ -209,9 +214,13 @@ class SquareFold:
         f = (1 << q.bit_length()) - q
         return f * f <= q
 
-    def modadd(self, C, a, b, ctrl):
+    def modadd(self, C, a, b, ctrl, Z=()):
+        _lend(C, list(Z), lambda: self._modadd(C, a, b, ctrl))
+
+    def _modadd(self, C, a, b, ctrl):
         """Mod.modadd with _reduce's carries above f's window held by a Prefix, so it runs
-        beside the wires compute leaves live. The same flag, the same write, the same CCX."""
+        beside the wires compute leaves live. The same flag, the same write, the same CCX.
+        Z lists wires holding 0, handed to its ancillas first and returned holding 0."""
         f, w = self.f, self.b
         top, t = C.alloc(2)
         add(C, a, b, top, ctrl)
@@ -286,9 +295,18 @@ class SquareFold:
         keep = list(J[self.junk - self.keep:]) if self.keep else None
         # E, T, t, c, k and inc are first written after the product, so its ancillas can borrow
         # them: the root's add onto its upper half pads V with w - h - 1 zero wires.
+        zeros = []
         _lend(C, E + T + [t, c, k] + inc,
-              lambda: _karatsuba(C, Y, lo + hi, junk, self.thr, "R", keep))
+              lambda: _karatsuba(C, Y, lo + hi, junk, self.thr, "R", keep, zeros))
         assert not junk and not keep
+        # J's places that hold 0 from here to the exit: the fold and the modadd beside this
+        # block borrow them.
+        self.zero_slots = [J.index(z) for z in zeros]
+        _lend(C, zeros, lambda: self._fold(C, Y, lo, hi, E, T, t, c, k, inc_t, inc_k))
+
+    def _fold(self, C, Y, lo, hi, E, T, t, c, k, inc_t, inc_k):
+        """lo + 2^n*hi = Y*(2^n - Y) on entry, the other registers 0. On exit lo = Y^2 mod q."""
+        n, f, b, m = self.n, self.f, self.b, self.m
         # hi = Y - hi = ~(hi + ~Y), and lo = ~lo.
         for w in Y:
             C.x(w)
