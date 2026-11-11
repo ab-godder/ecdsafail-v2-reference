@@ -163,6 +163,8 @@ class TwoBitMod(Mod):
     # the one-pass add with the rolling XOR D.
     SPLIT_ADD = True
     SPLIT_COPIES = 4
+    # With SPLIT_ADD, this many Bezout ticks of each pass, spread evenly, keep the one-pass add.
+    SPLIT_SKIP = 0
     # The longest block of the tick's high-word Prefix P, or None for doubling blocks.
     P_CAP = None
 
@@ -385,8 +387,8 @@ class TwoBitMod(Mod):
             self._mark_b1(C, prev, p)
             C.free([p])
 
-    def _add_or_shift(self, C, J, a, word, held_lane=True):
-        if self.SPLIT_ADD:
+    def _add_or_shift(self, C, J, a, word, held_lane=True, split=None):
+        if self.SPLIT_ADD if split is None else split:
             self._add_then_rotate(C, J, a, word, held_lane)
         else:
             self._add_or_shift_d(C, J, a, word, held_lane)
@@ -567,8 +569,9 @@ class TwoBitMod(Mod):
         C.cx(tau, b)
 
     def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None,
-             tau=None, sw=None, tape=False):
+             tau=None, sw=None, tape=False, split=None):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
+        split picks the add-or-shift (see _add_or_shift); None takes SPLIT_ADD.
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally.
 
         held is the wire the tick before handed over, holding [prev is B1], or None to compute
@@ -629,7 +632,7 @@ class TwoBitMod(Mod):
         if p is not None:
             for x in word:
                 C.cx(p, x)
-        self._add_or_shift(C, b, a, word, held_lane=prev is not None)
+        self._add_or_shift(C, b, a, word, held_lane=prev is not None, split=split)
         if p is not None:
             for x in word:
                 C.cx(p, x)

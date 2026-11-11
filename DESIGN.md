@@ -768,6 +768,10 @@ Per tick it is 4n + 1 CCX against 3n + 2, 255 more at secp256k1, and the add alo
 At G the emission goes from 19,116,010 to 16,862,405 ticks for 3,185,039 to 3,381,135 CCX (T 22,295,273 to 23,667,945), 11.49 ticks a CCX, at 4,096 wires; after the post-emit passes, 18,475,761 to 16,225,970.
 The toy curves with the merged tick run it in the exhaustive rows; their wire counts do not change.
 
+### A dial on the split add (`SPLIT_SKIP`)
+
+`SPLIT_SKIP` Bezout ticks of each pass, spread evenly over its T ticks (tick i when floor(i·k/T) steps), keep the one-pass add; each is its own recorded tick, so the definitions stay the same over addends. At G each skipped tick runs twice (M and its inverse) and gives back 2 × 255 CCX for about 2 × 2,870 ticks, 11.5 ticks a CCX, linearly: skip 38 is 17,080,113 ticks at 3,362,191 CCX (T 23,535,337), skip 96 is 17,421,385 at 3,332,495 (T 23,327,465). It is 0 here. The toy rows pass at skips 1, 3 and all.
+
 ### A cap on the tick's high Prefix (`P_CAP`)
 
 `Prefix` takes an optional cap on its block length (iwnlcern's PR #24, `6b5d78b`). Its AND-top and increment contracts hold for every partition into blocks, as `Prefix`'s docstring argues block by block, so only the shape changes.
