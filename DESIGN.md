@@ -679,3 +679,11 @@ Together they equal CX from gen on every canonical X, b < q, and either gen, whi
 It checks the BDD against b + gen*value mod q on random and edge lanes, and four controls each yield a counterexample that the lane simulator confirms: either half alone, the pair without the b < q bound (at b = q), and the other pair of CCX on the same controls, (2,920, 5,378).
 This is PR #21's commit 9 (iwnlcern found the pair); our `qec/arith.py` is byte-identical to its base, so the call's ops are the same, and the proof here is our own.
 At G: 3,185,837 -> 3,185,835 CCX, T 22,300,859 -> 22,300,845, 19,118,938 ticks.
+
+### Post-emit passes
+
+The submission is the emission after three circuit-level passes, `scripts/post_pass.py --rounds 2`: `qec/split_dirs.py` gives each two-way definition that runs often or holds calls a reversed twin, so each runs one way; `qec/gate_pass.py` cancels self-inverse pairs across commuting gates and orients CCX controls by majority over each record's executions; `qec/reorder_pass.py` moves commuting gates on each body's critical path, keeping a group of new bodies only if the whole circuit's ticks do not rise.
+`split_dirs.py`, `reorder_pass.py`, `post_pass.py` and `check_passes.py` are ours from `qt-mike`; `gate_pass.py` is upstream's.
+Each keeps the function on every input by its own argument (its docstring); `scripts/check_passes.py` runs them on every toy instance and checks every lane of the expanded result, and `scripts/check_file.py` simulates the passed secp256k1 file at G on the special points and random R.
+At G the passes take 19,118,938 ticks to 18,478,693 (10.6 minutes at 9 jobs); with `--rounds 0` they give 18,482,533.
+A direction-aware rerun of the depth pass's scheduler on every split body, tried before them, gave 18,983,284 on its own but 18,489,306 after them, and doubled the file, so it is not used.

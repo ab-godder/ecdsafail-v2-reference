@@ -22,6 +22,15 @@ This directory holds a generator for the arithmetic kernel that the `secp256k1-c
 
 `DESIGN.md` records the contract reading, the three designs compared, the data shape, and the completeness argument.
 
+## Reproduce the submission
+
+```sh
+python3.12 -I -B scripts/emit.py --hier --out lowt-depth.emit.json
+python3.12 -I -B scripts/post_pass.py lowt-depth.emit.json lowt-depth.circuit.json --jobs 9 --rounds 2
+python3 wrap.py lowt-depth.circuit.json lowt-depth.method.json      # the qcb release's wrap.py
+python3.12 -I -B scripts/check_file.py lowt-depth.circuit.json       # simulate it at G
+```
+
 ## Run
 
 ```sh
@@ -64,8 +73,8 @@ Python is stdlib only. The harness is a Rust crate whose dependencies are path r
 All numbers are measured unless marked as estimates.
 
 **This branch.**
-At G the circuit is 4,096 wires, 3,185,835 CCX, 22,300,845 T and 12,625,755 ops.
-The hierarchical emission, with the depth pass, has a scheduled depth of 19,118,938 ticks, giving qubit-time 78,311,170,048; `DESIGN.md`, "Depth changes", lists the changes from 35,620,290.
+At G the circuit is 4,096 wires, 3,185,835 CCX and 22,300,845 T.
+The hierarchical emission, with the depth pass, has 12,625,755 ops and a scheduled depth of 19,118,938 ticks; after the post-emit passes, the submitted circuit has 12,317,861 ops and 18,478,693 ticks, giving qubit-time 75,688,726,528. `DESIGN.md`, "Depth changes", lists the changes from 35,620,290.
 Wires × T is 91,344,261,120, which is 21.68% below the reference's 2,311 × 50,465,933.
 The hierarchical JSON for G is 37,346,416 bytes, under the 100 MiB upload cap, with an expanded ops charge of 13,722,774; the flat circuit is still over the 10,000,000 operation cap.
 Two named limits apply.
