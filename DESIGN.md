@@ -607,3 +607,18 @@ It adds T - 2 = 382 tape wires at the Bezout peak and removes the tick's own sw 
 At G: 3,186,609 -> 3,185,837 CCX (-772), 22,306,263 -> 22,300,859 T, 4,096 wires.
 Dropping the X of the restore gives 15,084 failing lanes in `check.py`'s 36 toy instances; the build as committed gives zero there, in `keep_check.py` and in `model_check.py`'s gate rows, including the 832 secp256k1 width-edge lanes.
 `DialogMultiplier.SWAP_WIRES = False` restores the previous construction; the fallback, coded-tape and short-pass paths never use it.
+
+## Depth changes
+
+The changes below cut scheduled ticks under the board's tick model, not CCX: CCX, T and the 4,096-wire peak do not move.
+Several are ideas from iwnlcern's PR #21 (`v2/junk-depth`), re-derived and reimplemented on this tree's Euclid step and Bézout tick, which differ from PR #14's.
+`scripts/step_check.py` runs every Euclid step variant at widths 2 to 7 against the step at `3cb492c` on every state of (U, V, E), restricted for a top mode to the domain `_top_bit` names, and needs the same outputs and clean scratch and copies; a dropped CCX must fail it.
+
+### Parallel strip rotation
+
+The strip's serial chain of w - 2 (or w - 3 under top_clear) controlled swaps V[i] <-> V[i + 1] is a left rotation of V[:L], L = w - 1 (w - 2), under held.
+It is now the same permutation as two layers of disjoint swaps, all of V[:L] reversed and then all of it but the last wire, still L - 1 controlled swaps.
+held is first copied by a doubling CX tree onto up to L // 2 - 1 clean wires, which control the swaps round-robin, and the reversed tree clears them.
+The copies are the held wires of the pass's last cells, which no step writes before its own, so they are zero when step i runs, and the inverse pass, undoing step i only after every later step, finds them zero too.
+The step takes them as one more register, so no wire is allocated.
+At G: 35,620,290 -> 32,524,514 ticks, 3,185,837 CCX, 4,096 wires.

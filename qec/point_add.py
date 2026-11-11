@@ -11,6 +11,34 @@ from . import block0_code, tail_code, tape_block
 from .tape_block import FREE, TICKS
 
 
+def _fan(C, src, copies):
+    """CX tree that XORs src onto each copy, doubling the wires that hold it each layer. Returns
+    the tree's (source, target) pairs in order; replaying them reversed undoes it."""
+    tree, have, todo = [], [src], list(copies)
+    while todo:
+        layer = [(h, todo.pop(0)) for h in list(have)[:len(todo)]]
+        for h, t in layer:
+            C.cx(h, t)
+        tree += layer
+        have += [t for _, t in layer]
+    return tree
+
+
+def _rotate_left(C, ctrl, V, copies):
+    """Under ctrl, V[:] = V[1:] + V[:1] on the wires: the serial strip's permutation, as two
+    layers of disjoint swaps, all of V reversed and then all but its last wire. copies are clean
+    wires that take ctrl for the layers' swaps and are clean again on return."""
+    L = len(V)
+    tree = _fan(C, ctrl, copies)
+    ctl = [ctrl] + list(copies)
+    for p in range(L // 2):
+        cswap(C, ctl[p % len(ctl)], [V[p]], [V[L - 1 - p]])
+    for p in range((L - 1) // 2):
+        cswap(C, ctl[p % len(ctl)], [V[p]], [V[L - 2 - p]])
+    for h, t in reversed(tree):
+        C.cx(h, t)
+
+
 class DialogMultiplier:
     """M(x, y) = (x, x*y mod q) for canonical 1 <= x < q; see model.py."""
 
@@ -322,22 +350,36 @@ class DialogMultiplier:
             plan[i], total = k, total + k
         return plan
 
+    @staticmethod
+    def _strip_copies(w, top_clear):
+        """Clean wires the strip's rotation of _strip_len wires takes for its control."""
+        return max(0, DialogMultiplier._strip_len(w, top_clear) // 2 - 1)
+
+    @staticmethod
+    def _strip_len(w, top_clear):
+        return w - 2 if top_clear else w - 1
+
     def _euclid_step(self, w: int, top_clear: bool = False, narrow: bool = False, last: bool = False,
-                     keep: int = 0, sw: bool = False):
+                     keep: int = 0, sw: bool = False, cp: int = 0):
         """top_clear: the tick before ran at the same width, so V is below 2^(w - 1) on entry
         and the second strip's last swap, of two zero bits, never fires.
         narrow: the next width is w - 1, so by E7 this step leaves U below 2^(w - 1).
         last: the pass's last tick, whose input reaches (U, V, E) = (1, 0, 0) by E3.
-        sw: the cell has a fourth wire, zero on entry, which the step leaves holding s = g0 AND b."""
+        sw: the cell has a fourth wire, zero on entry, which the step leaves holding s = g0 AND b.
+        cp: the step takes that many clean wires last, as copies of the strip's control, and
+        returns them clean."""
         if last:
             top_clear = narrow = False
             keep = 0
             sw = False
-        key = (w, top_clear, narrow, last, keep, sw)
+            cp = 0
+        key = (w, top_clear, narrow, last, keep, sw, cp)
         if key not in self._euclid_steps:
             C = self.C
 
-            def step(U, V, E, cell, *kept):
+            def step(U, V, E, cell, *extra):
+                kept = extra[:1] if keep else ()
+                copies = extra[-1] if cp else []
                 g0, b, held = cell[:3]
                 offset = E[0]
                 if last:
@@ -370,8 +412,8 @@ class DialogMultiplier:
                 C.x(g0)
                 C.cx(offset, V[0])
                 C.ccx(held, offset, V[0])
-                for i in range(w - 3 if top_clear else w - 2):
-                    cswap(C, held, [V[i]], [V[i + 1]])
+                # Under held, rotate V[:L] left by one: L - 1 swaps, as _rotate_left's two layers.
+                _rotate_left(C, held, V[:self._strip_len(w, top_clear)], copies)
                 # b = s ^ two, the cell's swept bit; then held = s, as two ^ (s ^ two).
                 C.cx(held, b)
                 C.cx(b, held)
@@ -380,7 +422,7 @@ class DialogMultiplier:
                 # A subtract keeps its swap s on E and holds the old offset e beside the cell.
                 cswap(C, g0, [offset], [held])
 
-            sizes = [w, w, 1, 4 if sw else 3] + ([keep] if keep else [])
+            sizes = [w, w, 1, 4 if sw else 3] + ([keep] if keep else []) + ([cp] if cp else [])
             self._euclid_steps[key] = C.record_shape(step, sizes)
         return self._euclid_steps[key]
 
@@ -470,7 +512,12 @@ class DialogMultiplier:
                     assert plan[i] <= self._kept_count(w, top_clear, narrow, last)
                     regs.append(kept[at:at + plan[i]])
                     at += plan[i]
-                self.C.apply(self._euclid_step(w, top_clear, narrow, last, plan[i], on_sw), regs)
+                # The strip's control copies go on later cells' held wires, which are zero until
+                # their own steps.
+                cp = 0 if last else min(self._strip_copies(w, top_clear), self.iters - 1 - i)
+                if cp:
+                    regs.append(held[self.iters - cp:])
+                self.C.apply(self._euclid_step(w, top_clear, narrow, last, plan[i], on_sw, cp), regs)
             G.extend(cell[:2])
             next_width = self.widths[i + 1] if i + 1 < self.iters else self.pass_tail_width
             assert w - 1 <= next_width <= w
