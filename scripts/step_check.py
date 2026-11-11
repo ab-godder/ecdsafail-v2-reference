@@ -29,8 +29,8 @@ from qec.builder import CCX, Circuit
 from qec.point_add import DialogMultiplier
 
 
-def load_ref(commit, tmp):
-    data = subprocess.run(["git", "-C", str(ROOT), "archive", commit, "qec"], check=True,
+def load_ref(commit, tmp, repo=ROOT):
+    data = subprocess.run(["git", "-C", str(repo), "archive", commit, "qec"], check=True,
                           capture_output=True).stdout
     tarfile.open(fileobj=io.BytesIO(data)).extractall(tmp, filter="data")
     (Path(tmp) / "qec").rename(Path(tmp) / "qec_ref")
@@ -103,9 +103,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", default="3cb492c")
     ap.add_argument("--max-width", type=int, default=7)
+    ap.add_argument("--repo", default=str(ROOT), help="git checkout that holds --ref")
     a = ap.parse_args()
     with tempfile.TemporaryDirectory() as tmp:
-        ref_pa, ref_builder, ref_arith = load_ref(a.ref, tmp)
+        ref_pa, ref_builder, ref_arith = load_ref(a.ref, tmp, a.repo)
         q = 251
         cur = DialogMultiplier(Circuit(), Mod(q))
         ref = ref_pa.DialogMultiplier(ref_builder.Circuit(), ref_arith.Mod(q))

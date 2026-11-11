@@ -184,23 +184,29 @@ class DialogMultiplier:
             C.ccx(g0, U[-1], g1)
         else:
             self._top_bit(C, top, g0, U[-1], V[-1], U[-2], g1)
-        for i in reversed(range(chain)):
-            # Restore a_i and select S_i while unwinding the carry chain.
-            if i == 0:
-                C.cx(V[i], U[i])
-                C.cx(g0, V[i])
-            else:
-                C.ccx(carries[i], V[i], U[i])
-                C.ccx(g0, carries[i], V[i])
+        # The selects go in before the unwind reaches each bit, so the unwind's serial chain
+        # holds one CCX and one CX a bit. With S = carries[i] = c ^ a, B = V[i] = b ^ a: S ^= g1*B,
+        # then B ^= g0*NOT(S). The restore A ^= S*B then leaves A = a ^ g1*(b ^ a), since
+        # S*NOT(S) = 0, and S ^= A leaves S = c. Three CX after the chain give the old outputs.
+        # This needs g1 => g0, which both g1 forms above give.
+        for i in reversed(range(1, chain)):
+            C.ccx(g1, V[i], carries[i])
+            C.x(carries[i])
+            C.ccx(g0, carries[i], V[i])
+            C.x(carries[i])
+        for i in reversed(range(1, chain)):
+            C.ccx(carries[i], V[i], U[i])
             C.cx(U[i], carries[i])
+        # Bit 0 as before: c ^= a; v ^= a; v ^= c with the empty X pair gone is v ^= c; c ^= a.
+        C.cx(V[0], U[0])
+        C.cx(g0, V[0])
+        C.cx(carries[0], V[0])
+        C.cx(U[0], carries[0])
+        C.cx(carries[0], V[0])
+        for i in range(1, chain):
             C.cx(U[i], V[i])
-            # S_i XOR c_i XOR 1 is a_i XOR v_i on the swap branch.
-            C.cx(carries[i], V[i])
-            C.x(V[i])
-            if i != 0:
-                C.ccx(g1, V[i], U[i])
-            C.x(V[i])
-            C.cx(carries[i], V[i])
+            C.cx(g1, U[i])
+            C.cx(g0, V[i])
         C.free([cin])
         for wire in V:
             C.x(wire)

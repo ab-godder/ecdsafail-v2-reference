@@ -622,3 +622,15 @@ held is first copied by a doubling CX tree onto up to L // 2 - 1 clean wires, wh
 The copies are the held wires of the pass's last cells, which no step writes before its own, so they are zero when step i runs, and the inverse pass, undoing step i only after every later step, finds them zero too.
 The step takes them as one more register, so no wire is allocated.
 At G: 35,620,290 -> 32,524,514 ticks, 3,185,837 CCX, 4,096 wires.
+
+### Euclid selects outside the carry chain
+
+In `_shared_difference` each in-place bit i >= 1 of the chain used to select inside the unwind: restore a_i, then select S_i and apply the swap's correction to U[i], all on the carry chain.
+With S = carries[i] = c ^ a, B = V[i] = b ^ a and A = U[i] at the top of the chain, the selects now go in first, top bit down: S ^= g1*B, then B ^= g0*NOT(S).
+The unwind is then A ^= S*B and S ^= A alone, one CCX and one CX a bit: A becomes a ^ g1*(b ^ a), since S*NOT(S) = 0 leaves the restore's product S*B as it was apart from g1*B, and S becomes c.
+Three CX a bit after the chain, B ^= A, A ^= g1 and B ^= g0, with the existing B ^= g1, give the old outputs.
+The pre-select needs g1 => g0, which holds wherever g1 is made: CCX(g0, ...) with no top mode, and H = g0*MAJ(a, b, c) from `_top_bit` on its mode's domain.
+Bit 0 loses its empty X pair: c ^= a; v ^= a; v ^= c is v ^= c; c ^= a, then v ^= c.
+The CCX are the same three a bit. `_kept_difference`, bit 0's carry and the top bit are unchanged.
+This is the identity of PR #21's commits 3 and 6, derived again here for this step, whose in-place branch is the same; `scripts/step_check.py` checks it on every state, within each top mode's domain.
+At G: 32,524,514 -> 26,647,800 ticks.
