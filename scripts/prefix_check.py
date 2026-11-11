@@ -4,10 +4,14 @@
 
 For every length h up to --max-bits, with and without release()/restore() between the two, both
 versions run on all 2^(h+1) values of (bits, t) with clean scratch. The outputs must match and
-every other wire must be zero; the result must also be bits + t mod 2^h. Control: the current
-version with one CCX of write dropped must fail.
+every other wire must be zero; the result must also be bits + t mod 2^h. With each block cap in
+CAPS that splits a block, the current version alone must give bits + t with clean scratch. Control:
+the current version with one CCX of write dropped must fail, capped or not. The tick's lengths
+(WIDE) run at their caps on sampled lanes: a run of ones of every length from bit 0, which
+reaches every block's top, under random high bits, with t = 0 and 1, and 512 random lanes.
 """
 import argparse
+import random
 import sys
 import tempfile
 from pathlib import Path
@@ -22,10 +26,10 @@ from qec.two_bit import Prefix
 from step_check import load_ref
 
 
-def build(Circ, Pre, h, release, drop=None):
+def build(Circ, Pre, h, release, drop=None, cap=None):
     C = Circ()
     bits, (t,) = C.alloc(h), C.alloc(1)
-    P = Pre(C, bits)
+    P = Pre(C, bits) if cap is None else Pre(C, bits, cap=cap)
     if release:
         P.release()
         P.restore()
@@ -41,10 +45,11 @@ def build(Circ, Pre, h, release, drop=None):
     return ops, bits, t, C.num_wires
 
 
-def run(built, h):
+def run(built, h, values=None):
     ops, bits, t, num = built
-    lanes = 1 << (h + 1)
-    init = sim.pack(range(lanes), bits + [t])
+    values = range(1 << (h + 1)) if values is None else values
+    lanes = len(values)
+    init = sim.pack(values, bits + [t])
     state = sim.run(ops, num, init, lanes)
     out = sim.unpack(state, bits, lanes)
     dirty = 0
@@ -53,6 +58,10 @@ def run(built, h):
             dirty |= state[w]
     ok_t = state[t] == init[t]
     return out, dirty, ok_t
+
+
+CAPS = (1, 2, 3, 5)
+WIDE = ((221, None), (221, 37), (221, 23), (222, 37), (190, 37), (64, 13))
 
 
 def main():
@@ -75,6 +84,21 @@ def main():
                 if new != old or new[0] != want or new[1] or not new[2]:
                     bad += 1
                     print("MISMATCH", h, release, flush=True)
+                # Capped blocks (P_CAP), against bits + t alone: the reference has no cap.
+                for cap in CAPS:
+                    if cap >= h - 1:
+                        continue
+                    got = run(build(Circuit, Prefix, h, release, cap=cap), h)
+                    cases += 1
+                    if got[0] != want or got[1] or not got[2]:
+                        bad += 1
+                        print("MISMATCH cap", h, release, cap, flush=True)
+                    for frac in (0.0, 0.99):
+                        built = build(Circuit, Prefix, h, release, frac, cap=cap)
+                        if built is not None:
+                            controls += 1
+                            mut = run(built, h)
+                            caught += mut[0] != want or bool(mut[1]) or not mut[2]
                 if h >= 3:
                     for frac in (0.0, 0.5, 0.99):
                         built = build(Circuit, Prefix, h, release, frac)
@@ -83,6 +107,24 @@ def main():
                         controls += 1
                         mut = run(built, h)
                         caught += mut[0] != want or bool(mut[1]) or not mut[2]
+        # The tick's lengths at its caps, on lanes that reach every block's top: runs of ones from
+        # bit 0 of every length, with t = 1 and 0, and random words.
+        rng = random.Random(7)
+        for h, cap in WIDE:
+            vals = [((1 << k) - 1) | ((rng.getrandbits(h) << (k + 1)) % (1 << h)) | tb << h
+                    for k in range(h + 1) for tb in (0, 1)]
+            vals += [rng.getrandbits(h + 1) for _ in range(512)]
+            want = [(v & ((1 << h) - 1)) + (v >> h) & ((1 << h) - 1) for v in vals]
+            for release in (False, True):
+                got = run(build(Circuit, Prefix, h, release, cap=cap), h, vals)
+                cases += 1
+                if got[0] != want or got[1] or not got[2]:
+                    bad += 1
+                    print("MISMATCH wide", h, cap, release, flush=True)
+                built = build(Circuit, Prefix, h, release, 0.5, cap=cap)
+                controls += 1
+                mut = run(built, h, vals)
+                caught += mut[0] != want or bool(mut[1]) or not mut[2]
         print(f"{cases} cases, {bad} mismatched; controls caught {caught} of {controls}")
         sys.exit(1 if bad or caught != controls else 0)
 

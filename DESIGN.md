@@ -748,3 +748,27 @@ Cutting every tick from 129 to 382 would save 5,068 CCX, but this search cannot 
 The generic factor of 2 is tight in general: q = 2^p - 1 and x = q - 1 reach (2^(p-1) - 1, 1) at ratio 2 - o(1).
 For about three quarters of the primes just below 2^16 to 2^24, brute force finds one to a few inputs that break the full cut, so sampling cannot settle it.
 Tick 128 cannot be cut: x = 2^255 reaches (q, 1) there.
+
+## Tick ticks for CCX
+
+The changes below spend CCX, or wires, on the Bezout tick's scheduled ticks. Each is a knob on `TwoBitMod`.
+
+### The split add-or-shift (`SPLIT_ADD`, `SPLIT_COPIES`)
+
+`_add_or_shift_d`, the add-or-shift above, gives each bit one CCX for both the add's sum and J's shift, through the rolling XOR D. D is one wire that every bit of the down pass reads and writes, a CCX control among them, so the down pass ran at about 23 ticks a bit and the up pass at 11 to 12.
+`_add_then_rotate` separates the two maps, as iwnlcern's split add does (PR #24, `dab249c`); it is reimplemented here for this tick, whose top three bits, held lanes and D1 domain differ, and its gate order is new.
+
+- **The add.** It is the ripple add of a >> 1 into word[:n - 1] with each sum bit made conditional on NOT J in the up pass. Right after bit i's carry CCX, with x = c_i ^ a_i on the bit's carry line, three gates give u ^= NOT(J) AND NOT(x) (CX from NOT J, CX from x, CCX from a copy of J and x). x * NOT(x) = 0, so x * u, the only thing the down pass reads of u, is unchanged and the down pass is the plain undo, one CCX a bit. After it, CX from NOT J and from a_i leave u = w ^ NOT(J) * x: the sum bit off J and w on J. The carry into bit n - 1 goes into word's top three bits as NOT(J) * c, through a CCX and its undo, and on held lanes through hi.
+- **The rotation.** On J, word[n] and word[n + 1] are 0 (D1: a J cell never follows a B1), so word = 2 * word is the left rotation of word[0..n]. It is two layers of disjoint controlled swaps: all n + 1 bits reversed, pairs (j, n - j), then all but word[0], pairs (j + 1, n - j). Each swap goes out as soon as the down pass has finished both its bits. The add acts only off J and the rotation only on J, so on every lane one of them is the identity and their order is free.
+- **Gate order.** In the up pass every carry line's c ^= a is emitted before the CCX that sets the carry; the two share only that wire, as targets, so they commute, and bottom up each line is read before it is written. The carry is then a CCX control and nothing else, 7 ticks a bit, against 11 to 12 when the CX sits between consecutive CCX. In the down pass the c ^= a that restores a line is emitted after the next lower CCX, which again shares only that target, so the line is a CCX target and nothing else, 11 ticks a bit; until then line i holds a_i ^ a_(i+1). Run backwards, each pass keeps the property, so the inverse tick runs the same rates.
+- **Copies.** `SPLIT_COPIES` = 4 copies of J, made by a CX tree before J is negated and cleared after, control the up-pass CCX and the swaps round-robin. 1 copy costs 750 ticks a tick standalone, 2 about 100, 4 and more none.
+
+Per tick it is 4n + 1 CCX against 3n + 2, 255 more at secp256k1, and the add alone takes 4,673 standalone ticks each way against 8,478.
+`scripts/add_check.py` (`I2.add`) runs every variant, both adds, held lanes on and off, and 1, 2, 4 and 7 copies, at n = 3 to 7 on every (J, a, word), and requires word = 2 * word on J and word + (a >> 1) mod 2^(n + 2) off J on the domain (word's top two bits 0 on J, and on every lane without held lanes), with J and a unchanged and every other wire 0. Its controls, a dropped CCX at four places and the up pass's line XORs emitted top down, must fail.
+At G the emission goes from 19,116,010 to 16,862,405 ticks for 3,185,039 to 3,381,135 CCX (T 22,295,273 to 23,667,945), 11.49 ticks a CCX, at 4,096 wires; after the post-emit passes, 18,475,761 to 16,225,970.
+The toy curves with the merged tick run it in the exhaustive rows; their wire counts do not change.
+
+### A cap on the tick's high Prefix (`P_CAP`)
+
+`Prefix` takes an optional cap on its block length (iwnlcern's PR #24, `6b5d78b`). Its AND-top and increment contracts hold for every partition into blocks, as `Prefix`'s docstring argues block by block, so only the shape changes.
+Only the tick's high-word P reads `P_CAP`. It is None here: at G each cap below 63 adds 1 to 10 top wires, and this entry is at the 4,096-wire cap. On the split add, cap 37 is 16,369,100 emitted ticks at 4,099 wires (16 gives 16,518,084 at 4,106, 24 16,469,062 at 4,102, 31 16,401,654 at 4,100, 48 16,414,677 at 4,098, 63 16,491,661 at 4,097), so it is for a base with wires below the cap.

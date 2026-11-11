@@ -68,7 +68,7 @@ class Prefix:
     Nothing may read bits between this and write, and write runs top down.
     """
 
-    def __init__(self, C, bits):
+    def __init__(self, C, bits, cap=None):
         self.C, self.bits = C, bits
         self.blocks = []
         self.released = None
@@ -81,7 +81,7 @@ class Prefix:
         tops, start = [self.first], 2
         while start < h:
             carriers = bits[:start] + tops[:-1]
-            m = min(len(carriers) + 1, h - start)
+            m = min(len(carriers) + 1, h - start, cap or h)
             x, u = bits[start:start + m], carriers[:m - 1]
             for w in u:
                 C.x(w)
@@ -159,6 +159,13 @@ class Prefix:
 
 
 class TwoBitMod(Mod):
+    # The tick's add-or-shift: the split add then a rotation, on SPLIT_COPIES copies of J, or
+    # the one-pass add with the rolling XOR D.
+    SPLIT_ADD = True
+    SPLIT_COPIES = 4
+    # The longest block of the tick's high-word Prefix P, or None for doubling blocks.
+    P_CAP = None
+
     def __init__(self, q):
         super().__init__(q)
         n = self.n
@@ -379,6 +386,111 @@ class TwoBitMod(Mod):
             C.free([p])
 
     def _add_or_shift(self, C, J, a, word, held_lane=True):
+        if self.SPLIT_ADD:
+            self._add_then_rotate(C, J, a, word, held_lane)
+        else:
+            self._add_or_shift_d(C, J, a, word, held_lane)
+
+    def _add_then_rotate(self, C, J, a, word, held_lane=True):
+        """The same map as _add_or_shift_d: off J an add of a >> 1 on its own, on J a rotation.
+
+        The add is the ripple add with each sum bit made conditional in the up pass, while its carry
+        wire is idle: with x the bit's carry line, u ^= NOT(J) AND NOT(x) leaves x*u, the only thing
+        the down pass reads of u, unchanged, so the down pass is the plain undo, one CCX a bit, and
+        two CX after it leave u = w ^ NOT(J)*x, the sum off J and w on J. On J the rotation of word's
+        low n + 1 bits left is word = 2*word, as word[n] = 0 there; it is two layers of disjoint
+        swaps, all n + 1 reversed and then all but word[0], under copies of J, each swap emitted
+        once both its bits are final. Only one of the two acts on a lane, so their order is free.
+
+        Gate order keeps the carry off CX in both directions: in the up pass each carry line's
+        c ^= a is emitted before the CCX that sets the carry (they share only that target), so the
+        carry is a CCX control and nothing else; in the down pass the c ^= a undo is emitted after
+        the next lower CCX (again sharing only that target), so the carry line is a CCX target and
+        nothing else. Run backwards, each pass keeps the same property.
+        """
+        n, k = self.n, self.SPLIT_COPIES
+        (cin, carry, t) = C.alloc(3)
+        copies = C.alloc(k)
+        tree, sources = [], [J]
+        while len(tree) < k:
+            for s in list(sources):
+                if len(tree) == k:
+                    break
+                c = copies[len(tree)]
+                C.cx(s, c)
+                tree.append((s, c))
+                sources.append(c)
+        C.x(J)
+        ops, tgt = a[1:], word[:n - 1]
+        m = n - 1
+        carries = [cin] + ops[:-1]
+        # Up pass. u = w ^ a, then every carry line's c ^= a, bottom up, each read before written.
+        for i in range(m):
+            C.cx(ops[i], tgt[i])
+        for i in range(m):
+            C.cx(ops[i], carries[i])
+        for i in range(m):
+            c, u = carries[i], tgt[i]
+            C.ccx(c, u, ops[i])
+            # x*(u ^ NOT J ^ NOT J*x) = x*u: u ^= NOT J AND NOT x.
+            C.cx(J, u)
+            C.cx(c, u)
+            C.ccx(copies[i % k], c, u)
+        # Off J, word[n - 1:] += the carry into bit n - 1, held lanes through hi.
+        top, mid, hi = word[n - 1], word[n], word[n + 1]
+        C.ccx(J, ops[-1], carry)
+        C.ccx(carry, top, t)
+        if held_lane:
+            C.ccx(t, mid, hi)
+        C.cx(t, mid)
+        C.cx(carry, top)
+        C.x(top)
+        C.ccx(carry, top, t)
+        C.x(top)
+        C.ccx(J, ops[-1], carry)
+        # On J, word[0..n] rotates left: layer one reverses all n + 1 bits, pairs (j, n - j), and
+        # layer two all but word[0], pairs (j + 1, n - j). Each swap goes out once both its bits are
+        # final, as the down pass finishes them top down.
+        one, two, used = set(), set(), [0]
+
+        def swap(x, y):
+            cswap(C, copies[used[0] % k], [word[x]], [word[y]])
+            used[0] += 1
+
+        def ready(p):
+            """Position p's layer-one swap is out, or p is the middle bit, which has none."""
+            return 2 * p == n or min(p, n - p) in one
+
+        # Down pass. After CCX i, ops[i] holds a_i ^ a_(i+1) (a_i at the top) until the line above
+        # is final and lends its a_(i+1).
+        def finish(i):
+            o, u = ops[i], tgt[i]
+            if i + 1 < m:
+                C.cx(ops[i + 1], o)
+            C.cx(J, u)
+            C.cx(o, u)
+            if i < (n + 1) // 2:
+                swap(i, n - i)
+                one.add(i)
+            for j in (i, i - 1):
+                if 0 <= j < n // 2 and j not in two and ready(j + 1) and ready(n - j):
+                    swap(j + 1, n - j)
+                    two.add(j)
+
+        for i in reversed(range(m)):
+            C.ccx(carries[i], tgt[i], ops[i])
+            if i + 1 < m:
+                finish(i + 1)
+        finish(0)
+        C.cx(ops[0], cin)
+        assert len(one) == (n + 1) // 2 and len(two) == n // 2
+        C.x(J)
+        for s, c in reversed(tree):
+            C.cx(s, c)
+        C.free(copies)
+        C.free([cin, carry, t])
+
+    def _add_or_shift_d(self, C, J, a, word, held_lane=True):
         """On J, word = 2*word. Off J, word += a >> 1, through word's top two bits.
 
         word[n] must be 0 on J: a J cell never follows a B1 (D1), so a J lane is never held.
@@ -542,7 +654,7 @@ class TwoBitMod(Mod):
                 C.cx(y, k)
             C.x(one)
         ra, rb = self.run
-        P, M = Prefix(C, H), Prefix(C, L[ra:rb])
+        P, M = Prefix(C, H, cap=self.P_CAP), Prefix(C, L[ra:rb])
 
         # With at most one H bit, P reads a data wire or nothing, and there is nothing to borrow.
         spare = H[:] if len(H) > 1 else []
