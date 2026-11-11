@@ -828,3 +828,4 @@ The toy curves with the merged tick run it in the exhaustive rows; their wire co
 
 `Prefix` takes an optional cap on its block length (iwnlcern's PR #24, `6b5d78b`). Its AND-top and increment contracts hold for every partition into blocks, as `Prefix`'s docstring argues block by block, so only the shape changes.
 Only the tick's high-word P reads `P_CAP`. It is None here: at G each cap below 63 adds 1 to 10 top wires, and this entry is at the 4,096-wire cap. On the split add, cap 37 is 16,369,100 emitted ticks at 4,099 wires (16 gives 16,518,084 at 4,106, 24 16,469,062 at 4,102, 31 16,401,654 at 4,100, 48 16,414,677 at 4,098, 63 16,491,661 at 4,097), so it is for a base with wires below the cap.
+On the low-wire build it is set to 37: the tick's peak rises from 1,260 to 1,263 wires, and the emission falls from 17,072,158 to 16,580,397 ticks (15,935,010 after the post-emit passes); caps 31, 44 and 48 gave 1,264, 1,262 and 1,262 wires at higher qubit-time.

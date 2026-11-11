@@ -166,7 +166,7 @@ class TwoBitMod(Mod):
     # With SPLIT_ADD, this many Bezout ticks of each pass, spread evenly, keep the one-pass add.
     SPLIT_SKIP = 0
     # The longest block of the tick's high-word Prefix P, or None for doubling blocks.
-    P_CAP = None
+    P_CAP = 37
 
     def __init__(self, q):
         super().__init__(q)

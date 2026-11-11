@@ -74,11 +74,12 @@ Python is stdlib only. The harness is a Rust crate whose dependencies are path r
 All numbers are measured unless marked as estimates.
 
 **This branch.**
-This is the low-wire build: `DESIGN.md`, "A low-wire build", gives its switches and the half-square path that keeps the square under the multiplier's peak.
-At G the circuit is 1,260 wires, 3,250,112 CCX and 22,750,784 T.
-The hierarchical emission, with the depth pass, has 12,861,398 ops and a scheduled depth of 19,326,543 ticks; after the post-emit passes, the submitted circuit has 12,551,154 ops and 18,673,926 ticks, giving qubit-time 23,529,146,760.
-That is below PR #11's 22,948,282 T and 24,747,912,448 qubit-time (1,246 wires x 19,861,888 ticks) on both counts.
-The hierarchical JSON for G is 39,705,906 bytes, under the 100 MiB upload cap, with an expanded ops charge of 13,961,229 before the post-emit passes.
+This is the low-wire build with the split add-or-shift and `TwoBitMod.P_CAP = 37`: `DESIGN.md`, "A low-wire build", gives its switches and the half-square path that keeps the square under the multiplier's peak, and "The split add-or-shift" and "A cap on the tick's high Prefix" the tick.
+At G the circuit is 1,263 wires, 3,446,208 CCX and 24,123,456 T.
+The hierarchical emission, with the depth pass, has 12,672,962 ops and a scheduled depth of 16,580,397 ticks; after the post-emit passes, the submitted circuit has 12,267,734 ops and 15,935,010 ticks, giving qubit-time 20,125,917,630.
+That is below PR #24's 24,310,230 T and 21,253,748,388 qubit-time (1,249 wires x 17,016,612 ticks) on both counts.
+The hierarchical JSON for G is 39,689,092 bytes, under the 100 MiB upload cap, with an expanded ops charge of 13,774,724 before the post-emit passes and 13,369,496 after.
+The low-wire build without the split add and the cap, below PR #11 on both counts, is branch `bal-wires`: 1,260 wires, 3,250,112 CCX, 22,750,784 T and 18,673,926 ticks after the passes.
 The 4,096-wire build this branch started from (3,185,039 CCX, 18,475,761 ticks after the passes) is this source with `DialogMultiplier.HELD = True`, `KEEP = 2018`, `RAW_TAPE = True` and `ControlledPointAdd.HALVES = False`, which rebuilds it gate for gate (19,116,010 ticks before the passes).
 Two named limits apply.
 `I2.model`'s zero-caller row is narrowed from the reference's gate.
