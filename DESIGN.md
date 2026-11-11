@@ -781,3 +781,22 @@ So X becomes X - gen*(Y^2 - K), where K = (beta - f)(beta - 1) + f(2^n - 1) - (b
 
 `HalfSquares.bounds` checks every inequality the folds need on the integers and the class applies only where they hold: even n >= 8 and f small against 2^h. At secp256k1 the groups keep 683 and 616 junk wires, and the square peaks at 1,241 wires inside the point add, under the multiplier's 1,260.
 `scripts/halves_check.py` runs the path as `mulsub` builds it on every (gen, Y, X) at 8 and 10 bits for every prime where it applies, every Y at 12 to 16 bits, random and edge lanes at 18 to 64 bits and at secp256k1, with Y any n-bit value, and checks X, gen, Y and clean scratch; dropping any one of 19 spread CCX must fail.
+
+### Where the wires go, and the trade curve
+
+At G the multiplier sets the peak: its Bézout pass holds the coded tape (713 wires), R and S (512), c, f0 and f1, and the tick's own scratch, about 30 wires, for 1,260; its Euclid pass peaks at 1,232 and the square at 1,241.
+Going lower means taking wires out of `TwoBitMod.tick`, whose handed-over pair, shared bottom carry and kept low carries each spend wires to save CCX.
+Above 1,260 the switches buy CCX and a few ticks. Measured at G before the post-emit passes, which take off about 3.4%:
+
+| wires | switches | CCX | ticks |
+|---|---|---|---|
+| 1,260 | this build | 3,250,112 | 19,326,543 |
+| 1,300 | `KEEP = 40` | 3,249,952 | 19,325,151 |
+| 1,315 | `RAW_TAPE = True` | 3,236,344 | 19,225,722 |
+| 1,369 | raw tape, `HalfSquares.THR_B = 65`, `KEEP = 54` | 3,229,980 | 19,153,617 |
+| 1,400 | raw tape, `THR_B = 65`, `KEEP = 85` | 3,229,856 | 19,152,987 |
+| 1,600 | raw tape, `THR_B = 65`, `KEEP = 285` | 3,229,056 | 19,147,407 |
+| 1,634 | raw tape, `THR_AC = 66`, `THR_B = 65`, `KEEP = 319` | 3,216,902 | 19,075,690 |
+| 1,698 | raw tape, `HELD = True`, `SWAP_WIRES = False`, `THR_AC = 66`, `THR_B = 65` | 3,215,122 | 19,060,629 |
+
+The coded tape is 250 CCX a wire, a Karatsuba level inside a half square about 31 (6,148 CCX for B's 195 junk wires), held offsets 8 and kept carries 4; in qubit-time each wire costs about 0.08% at this peak, so 1,260 has the lowest qubit-time of these.

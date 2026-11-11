@@ -47,10 +47,33 @@ def is_prime(v):
 
 
 def primes(n, count=None):
-    fs = [f for f in range(1, 1 << (n // 2 + 1), 2)
-          if is_prime((1 << n) - f) and HalfSquares.applies((1 << n) - f)]
-    pick = fs if count is None else fs[:count] + fs[-count:]
-    return sorted({(1 << n) - f for f in pick})
+    """Every prime 2^n - f the class applies to, or the count smallest and largest f. Its bounds
+    need f below 2^(n/2 + 1), so the search for the largest starts there."""
+    ok = lambda f: is_prime((1 << n) - f) and HalfSquares.applies((1 << n) - f)
+    # The bounds fail once f*2^(n/2) nears 2^n; find the last f where they hold by bisection,
+    # checking each candidate below it again in full.
+    lo_f, hi_f = 1, 1 << (n // 2 + 1)
+    while hi_f - lo_f > 2:
+        mid = (lo_f + hi_f) // 2 | 1
+        lo_f, hi_f = (mid, hi_f) if HalfSquares.bounds((1 << n) - mid) else (lo_f, mid)
+    top = hi_f + 64
+    if count is None:
+        fs = [f for f in range(1, top, 2) if ok(f)]
+    else:
+        lo = [f for f in range(1, top, 2) if ok(f)][:count] if top < 1 << 16 else []
+        if not lo:
+            f = 1
+            while len(lo) < count and f < top:
+                if ok(f):
+                    lo.append(f)
+                f += 2
+        hi, f = [], top | 1
+        while len(hi) < count and f > 0:
+            if ok(f):
+                hi.append(f)
+            f -= 2
+        fs = lo + hi
+    return sorted({(1 << n) - f for f in fs})
 
 
 def edge_ys(n, q):
