@@ -741,6 +741,7 @@ The secp256k1 run took 2 h 12 min of wall time on 10 cores shared with other wor
 `--python` runs `search` itself at secp256k1 instead; it is about 8 times slower.
 
 At G: 3,185,837 -> 3,185,041 CCX (-796), 22,300,859 -> 22,295,287 T, 35,620,290 -> 35,610,716 ticks, 4,096 wires; one KEEP wire more builds 4,097 wires.
+On the depth changes above, the cut gives 3,185,835 -> 3,185,039 CCX (-796) and T 22,300,845 -> 22,295,273; the emission is 19,116,010 ticks and the post-emit passes take it to 18,475,761.
 
 **Limits.** Only ticks 129 to 168 are proved.
 Cutting every tick from 129 to 382 would save 5,068 CCX, but this search cannot reach it: its cost grows about 7.4 times per 4 bits of the floor on u, and the late ticks need floors near 1.

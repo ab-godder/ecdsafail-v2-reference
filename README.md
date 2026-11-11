@@ -74,10 +74,10 @@ Python is stdlib only. The harness is a Rust crate whose dependencies are path r
 All numbers are measured unless marked as estimates.
 
 **This branch.**
-At G the circuit is 4,096 wires, 3,185,835 CCX and 22,300,845 T.
-The hierarchical emission, with the depth pass, has 12,625,755 ops and a scheduled depth of 19,118,938 ticks; after the post-emit passes, the submitted circuit has 12,317,861 ops and 18,478,693 ticks, giving qubit-time 75,688,726,528. `DESIGN.md`, "Depth changes", lists the changes from 35,620,290.
-Wires × T is 91,344,261,120, which is 21.68% below the reference's 2,311 × 50,465,933.
-The hierarchical JSON for G is 37,346,416 bytes, under the 100 MiB upload cap, with an expanded ops charge of 13,722,774; the flat circuit is still over the 10,000,000 operation cap.
+At G the circuit is 4,096 wires, 3,185,039 CCX and 22,295,273 T.
+The hierarchical emission, with the depth pass, has 12,622,787 ops and a scheduled depth of 19,116,010 ticks; after the post-emit passes, the submitted circuit has 12,314,893 ops and 18,475,761 ticks, giving qubit-time 75,676,717,056. `DESIGN.md`, "Depth changes", lists the changes from 35,620,290, and "A width cut at secp256k1" the CCX cut at ticks 129 to 168.
+Wires × T is 91,321,438,208, which is 21.70% below the reference's 2,311 × 50,465,933.
+The hierarchical JSON for G is 37,512,568 bytes, under the 100 MiB upload cap, with an expanded ops charge of 13,719,471 (13,411,577 after the post-emit passes); the flat circuit is still over the 10,000,000 operation cap.
 Two named limits apply.
 `I2.model`'s zero-caller row is narrowed from the reference's gate.
 The standalone multiplier is restricted to x in [1, q), and nonzero x at its entries rests on the kernel's flag code and the non-full build refusal.
