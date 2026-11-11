@@ -584,3 +584,26 @@ Per M application this removes the Euclid pass's sweep, 765 CCX, and adds one CC
 At G: 3,187,369 -> 3,186,609 CCX (-760), 22,311,583 -> 22,306,263 T, 4,096 wires.
 Removing tau's CCX in `_sweep_in`, or ignoring tau in the tick, gives 41,988 bad lanes over the merged odd primes below 600 in `keep_check.py`'s multiplier check; both builds as committed give zero.
 The Euclid pass keeps a `sweep` flag, on by default, so `model_check.py` and `utape_check.py` still check the swept pass.
+
+## Swap bits on the tape
+
+Each cell i from 1 to T - 2 now has a fourth wire, sw, zero when M starts, that holds the cell's swap bit s = g0 AND b from the Euclid step to the inverse pass.
+The step writes it by CX at the point where held holds s, just before held takes the old offset, so the inverse pass, the same block reversed, clears it with that CX.
+Cell T - 1 needs none, because its cell is (1, 0) or (0, 1) and s = 0 there; cell 0 needs none, because tick 0 always swaps, so s = g0 there, which the cell-0 tick already uses.
+
+In the Bezout pass, tick k reads sw_k where it used to compute sw = g0 AND x_k onto a fresh wire with a CCX.
+The two are equal: x_k = b_k XOR t_(k+1), and t_(k+1) implies NOT g0_k, so g0 AND x_k = g0 AND b_k = s_k; the sweep never changes a subtract cell's bit.
+The tick then forms [cell k is B1] = 1 XOR g0 XOR b XOR sw on sw_k with the same X and CX gates as before, now in place, and tick k - 1 reads it as held.
+Where tick k - 1 used to clear that mark with CCX(NOT g0_k, NOT b_k) and free the wire, it now applies X, CX from g0_k and CX from b_k, which return sw_k to s_k.
+Tick k - 1 writes neither g0_k nor b_k, and b_k is the swept bit both times, so the mark is cleared exactly; tick 0 restores cell 1's.
+So when the pass ends every sw_k is s_k again and the tape is swept, as before.
+
+The unsweep after the pass is now the inverse of `_b1_sweep_sw`, which applies to (G, tau) the gates the ticks apply to them: b_k ^= tau, `_sweep_in` with sw_k for B1_k, and cell 0's clearing CCX.
+The ticks' other gates leave every g0, b and sw wire as they found it, so the tape map the pass applies is this sequence's, and its inverse restores the raw tape for the inverse Euclid pass; tau is zero before and after both.
+With s on a wire, B1_k = 1 XOR g0 XOR x XOR s is linear, so this sweep costs one CCX a cell, T - 1 in all, where `_b1_sweep`'s cswap and mark transition cost two.
+
+Per M application this removes 382 sw CCX and 382 mark-clearing CCX from the ticks and 382 CCX from the unsweep, 1,146 in all, or 2,292 per point addition.
+It adds T - 2 = 382 tape wires at the Bezout peak and removes the tick's own sw wire and the handed-over mark wire, so the peak grows by 380 and `KEEP` falls from 2398 to 2018, giving back 1,520 CCX.
+At G: 3,186,609 -> 3,185,837 CCX (-772), 22,306,263 -> 22,300,859 T, 4,096 wires.
+Dropping the X of the restore gives 15,084 failing lanes in `check.py`'s 36 toy instances; the build as committed gives zero there, in `keep_check.py` and in `model_check.py`'s gate rows, including the 832 secp256k1 width-edge lanes.
+`DialogMultiplier.SWAP_WIRES = False` restores the previous construction; the fallback, coded-tape and short-pass paths never use it.

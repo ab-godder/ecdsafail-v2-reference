@@ -445,7 +445,7 @@ class TwoBitMod(Mod):
         C.cx(tau, b)
 
     def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None,
-             tau=None):
+             tau=None, sw=None, tape=False):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally.
 
@@ -462,7 +462,12 @@ class TwoBitMod(Mod):
 
         tau, when given, carries the B1 sweep through an unswept tape: it holds the toggle the
         sweep step above leaves on this cell, and on return the one this cell's step leaves on the
-        next, or 0 after cell 0. See _sweep_in."""
+        next, or 0 after cell 0. See _sweep_in.
+
+        With tape, each cell's swap bit s = g0 AND b sits on the tape's swap wire: sw is this
+        cell's, read in place of a computed sw, and the returned [this cell is B1] is formed on it
+        in place. held is then the previous cell's swap wire holding its mark, which this tick
+        turns back into that cell's s with X and CX instead of clearing it with a CCX."""
         n, f, w = self.n, self.f, self.window
         g0, b = g
         if hand is None:
@@ -491,8 +496,9 @@ class TwoBitMod(Mod):
             sw = g0
             C.cx(g0, b)
         elif tau is not None:
-            (sw,) = C.alloc(1)
-            C.ccx(g0, b, sw)
+            if not tape:
+                (sw,) = C.alloc(1)
+                C.ccx(g0, b, sw)
             self._sweep_in(C, g0, b, sw, up, nxt, tau)
             C.cx(sw, b)
         else:
@@ -622,7 +628,13 @@ class TwoBitMod(Mod):
             bit_one(c1)
             C.ccx(p, c1, k2)
             bit_one(c1)
-        self._drop_after_b1(C, prev, p)
+        if tape and p is not None:
+            # p = 1 ^ g0 ^ b ^ s, formed by the tick before from this same cell's g0 and swept b.
+            C.x(p)
+            C.cx(prev[0], p)
+            C.cx(prev[1], p)
+        else:
+            self._drop_after_b1(C, prev, p)
         C.ccx(l0, k0, c1)
         C.free([c1])
         C.cx(sw, b)
