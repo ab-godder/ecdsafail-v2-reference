@@ -757,8 +757,8 @@ class DialogMultiplier:
             self._bezout_step = C.record_shape(step, [2, mod.n, mod.n])
         return self._bezout_step
 
-    def _bezout_tick(self, first, last, pebble=False, inline=False, tape=False):
-        key = (first, last, pebble, inline, tape)
+    def _bezout_tick(self, first, last, pebble=False, inline=False, tape=False, split=None):
+        key = (first, last, pebble, inline, tape, split)
         if key not in self._bezout_ticks:
             C, n = self.C, self.mod.n
             if tape:
@@ -767,7 +767,8 @@ class DialogMultiplier:
                     # B1 mark on entry and its swap bit again on return.
                     self.narrow.tick(C, prev or None, g, nxt[0] if nxt else None, R, S,
                                      pebble=pebble, held=psw[0] if psw else None, cell0=last,
-                                     hand=hand, tau=tau[0], sw=gsw[0] if gsw else None, tape=True)
+                                     hand=hand, tau=tau[0], sw=gsw[0] if gsw else None, tape=True,
+                                     split=split)
 
                 sizes = [0 if first else 2, 2, 0 if last else 1, n, n, 1,
                          0 if first else 1, 0 if last else 1, 2]
@@ -782,13 +783,22 @@ class DialogMultiplier:
                 # tau, with inline, carries the B1 sweep's toggle from tick to tick.
                 out = self.narrow.tick(C, prev or None, g, nxt[0] if nxt else None, R, S,
                                        pebble=pebble, held=None if first else flag[0],
-                                       cell0=last, hand=hand, tau=tau[0][0] if tau else None)
+                                       cell0=last, hand=hand, tau=tau[0][0] if tau else None,
+                                       split=split)
                 flag[:] = [] if out is None else [out]
 
             # flag and hand come last: a last tick's output leaves them empty.
             sizes = [0 if first else 2, 2, 0 if last else 1, n, n] + ([1] if inline else []) + [1, 2]
             self._bezout_ticks[key] = C.record_shape(tick, sizes)
         return self._bezout_ticks[key]
+
+    def _split(self, i):
+        """The add-or-shift of Bezout tick i: None for the default, False for one of SPLIT_SKIP
+        ticks spread evenly over the pass."""
+        skip, T = self.narrow.SPLIT_SKIP, self.iters
+        if not (self.narrow.SPLIT_ADD and skip) or (i * skip) // T == ((i + 1) * skip) // T:
+            return None
+        return False
 
     @property
     def inline_sweep(self):
@@ -871,7 +881,8 @@ class DialogMultiplier:
                     hand = C.alloc(2)
                 psw = [] if first else [swr[i]]
                 gsw = [] if last else [swr[i - 1]]
-                C.apply(self._bezout_tick(first, last, pebble, inline, tape=True),
+                C.apply(self._bezout_tick(first, last, pebble, inline, tape=True,
+                                          split=self._split(i)),
                         [prev, G[2 * i:2 * i + 2], nxt, Yr, S, tau, psw, gsw, hand])
             else:
                 if not flag:
@@ -882,7 +893,7 @@ class DialogMultiplier:
                 if not hand:
                     # No tick before this one handed a pair over, so its cell is not B1.
                     hand = C.alloc(2)
-                C.apply(self._bezout_tick(first, last, pebble, inline),
+                C.apply(self._bezout_tick(first, last, pebble, inline, split=self._split(i)),
                         [prev, G[2 * i:2 * i + 2], nxt, Yr, S] + ([tau] if inline else []) + [flag, hand])
             prev_block = (i + 1) // TICKS
             if (i + 1) % TICKS == 0 and i + 1 < T and prev_block < self.blocks:

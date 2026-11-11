@@ -186,6 +186,7 @@ class Run:
             "mutation": [["mutation_control.py"]],
             "step": [["step_check.py"]],
             "prefix": [["prefix_check.py"]],
+            "add": [["add_check.py"]],
             "pass": [["pass_check.py"]],
             "k1": [["k1_check.py"]],
             "post": [["check_passes.py"]],
@@ -342,6 +343,10 @@ def i2_step(run):
 
 def i2_prefix(run):
     return _script_row(run, "prefix", "Prefix and write to 14 bits against 3cb492c on every input")
+
+
+def i2_add(run):
+    return _script_row(run, "add", "the tick's add-or-shift, every variant, to 7 bits on every input of its domain")
 
 
 def i2_k1(run):
@@ -613,6 +618,7 @@ CHECKS = (
     Check("I2.mutation", "exactness: the checker rejects mutated circuits", i2_mutation, ("mutation",)),
     Check("I2.step", "exactness: rewritten Euclid steps equal the reference steps", i2_step, ("step",)),
     Check("I2.prefix", "exactness: rewritten Prefix.write equals the reference", i2_prefix, ("prefix",)),
+    Check("I2.add", "exactness: the tick's add-or-shift on every input of its domain", i2_add, ("add",)),
     Check("I2.pass", "exactness: depth pass only reorders commuting ops", i2_pass, ("pass",)),
     Check("I2.post", "exactness: post-emit passes keep every toy circuit exact", i2_post, ("post",)),
     Check("I2.k1", "exactness: the K1 cut at G is the same map on the call's domain", i2_k1, ("k1",)),
