@@ -94,8 +94,9 @@ def variants(max_w):
                         for sw in (False, True):
                             if last and (keep or sw):
                                 continue
-                            full = 0 if last else DialogMultiplier._strip_copies(w, top_clear)
-                            for cp in sorted({0, min(1, full), full}):
+                            full = 0 if last else max(DialogMultiplier._strip_copies(w, top_clear),
+                                                      2 * DialogMultiplier.SELECT_COPIES)
+                            for cp in sorted({0, min(1, full), min(3, full), full}):
                                 yield w, top_clear, narrow, last, keep, sw, cp
 
 

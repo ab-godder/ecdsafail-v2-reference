@@ -661,3 +661,11 @@ Its decisions read definition bodies alone, so definitions stay identical over a
 The flat branch is never changed, so `check_hier.py` emits with `depth_pass=False` against the flat pin, as do `keep_check.py` and `model_check.py`, which test the builder's M; `check.py --hier` and accept's emissions simulate the passed circuit.
 `scripts/pass_check.py`, which shares no code with the pass, certifies each definition: the same multiset of ops (a CCX's controls as a set), and on every wire the same runs of compatible roles in the same order, so every pair of non-commuting ops keeps its order; an exchanged conflicting pair must be rejected.
 At G: 23,458,995 -> 19,796,016 ticks.
+
+### Copies of g1 and g0 for the Euclid selects
+
+After the selects moved off the carry chain, each in-place bit still had CCX(g1, ...) and CCX(g0, ...), so g1 and g0 were two serial paths of w CCX each, which the unwind caught up with and waited on; the three CX loops after the chain were serial on them too.
+g1 and g0 are now each copied by a CX tree onto up to `SELECT_COPIES` = 16 clean wires as soon as the top bit has made g1, the selects and the CX loops take them round-robin, and the trees are undone before the step returns.
+Neither g1 nor g0 is written while the copies exist, so every copy equals its source and the gates are the same; `_kept_difference` does the same for its selects.
+The copies are the same clean held wires the strip's rotation takes, now at least 2 x 16 of them where the pass has that many later cells; the rotation still uses only its L // 2 - 1.
+At G: 19,796,016 -> 19,118,952 ticks (16 copies; 6 give 19,172,168 and 32 the same as 16 before the kept change).

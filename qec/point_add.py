@@ -161,12 +161,15 @@ class DialogMultiplier:
                      [self._block_wires(G, j, swept)], inverse=True)
 
 
-    def _shared_difference(self, U, V, g0, g1, top=None, kept=None):
+    SELECT_COPIES = 16
+
+    def _shared_difference(self, U, V, g0, g1, top=None, kept=None, copies=()):
         """Compare and form the even difference using one majority chain. With top set, bit w - 1
         is done by _top_bit on the domain that mode names. With kept, the chain's carries go onto
-        those zero wires instead and stay there, which the inverse pass clears."""
+        those zero wires instead and stay there, which the inverse pass clears. copies are clean
+        wires that take g1 and g0 for the selects and are clean again on return."""
         if kept is not None:
-            return self._kept_difference(U, V, g0, g1, top, kept)
+            return self._kept_difference(U, V, g0, g1, top, kept, copies)
         C = self.C
         (cin,) = C.alloc(1)
         carries = [cin] + U[:-1]
@@ -189,10 +192,15 @@ class DialogMultiplier:
         # then B ^= g0*NOT(S). The restore A ^= S*B then leaves A = a ^ g1*(b ^ a), since
         # S*NOT(S) = 0, and S ^= A leaves S = c. Three CX after the chain give the old outputs.
         # This needs g1 => g0, which both g1 forms above give.
-        for i in reversed(range(1, chain)):
-            C.ccx(g1, V[i], carries[i])
+        # g1 and g0 are copied onto the clean copies, which take the selects round-robin, so the
+        # selects are not one serial path on each; neither is written until the copies are cleared.
+        k = min(self.SELECT_COPIES, len(copies) // 2)
+        trees = [_fan(C, g1, copies[:k]), _fan(C, g0, copies[k:2 * k])]
+        c1, c0 = [g1] + list(copies[:k]), [g0] + list(copies[k:2 * k])
+        for j, i in enumerate(reversed(range(1, chain))):
+            C.ccx(c1[j % len(c1)], V[i], carries[i])
             C.x(carries[i])
-            C.ccx(g0, carries[i], V[i])
+            C.ccx(c0[j % len(c0)], carries[i], V[i])
             C.x(carries[i])
         for i in reversed(range(1, chain)):
             C.ccx(carries[i], V[i], U[i])
@@ -203,17 +211,20 @@ class DialogMultiplier:
         C.cx(carries[0], V[0])
         C.cx(U[0], carries[0])
         C.cx(carries[0], V[0])
-        for i in range(1, chain):
+        for j, i in enumerate(range(1, chain)):
             C.cx(U[i], V[i])
-            C.cx(g1, U[i])
-            C.cx(g0, V[i])
+            C.cx(c1[j % len(c1)], U[i])
+            C.cx(c0[j % len(c0)], V[i])
         C.free([cin])
         for wire in V:
             C.x(wire)
-        for wire in V[1:]:
-            C.cx(g1, wire)
+        for j, wire in enumerate(V[1:]):
+            C.cx(c1[j % len(c1)], wire)
+        for tree in trees:
+            for h, t in reversed(tree):
+                C.cx(h, t)
 
-    def _kept_difference(self, U, V, g0, g1, top, kept):
+    def _kept_difference(self, U, V, g0, g1, top, kept, copies=()):
         """_shared_difference with c_(i+1) built on kept[i - 1] by one CCX and never cleared, so
         U[i] keeps a_i and each bit's descent is the select and the exchange alone. Bit 0 is as
         there: U[0] holds c_1 = NOT g0 until its descent restores a_0 = 1. The returned carries
@@ -245,25 +256,29 @@ class DialogMultiplier:
             C.ccx(g0, carry[chain], g1)
         else:
             self._top_bit(C, top, g0, U[-1], V[-1], carry[chain], g1)
+        # As in _shared_difference, the selects take g0 and g1 round-robin from clean copies.
+        k = min(self.SELECT_COPIES, len(copies) // 2)
+        trees = [_fan(C, g1, copies[:k]), _fan(C, g0, copies[k:2 * k])]
+        c1, c0 = [g1] + list(copies[:k]), [g0] + list(copies[k:2 * k])
         for i in reversed(range(m + 1, chain)):
             # The in-place descent of _shared_difference, which restores c_i on carry[i].
             C.ccx(carry[i], V[i], U[i])
-            C.ccx(g0, carry[i], V[i])
+            C.ccx(c0[i % len(c0)], carry[i], V[i])
             C.cx(U[i], carry[i])
             C.cx(U[i], V[i])
             C.cx(carry[i], V[i])
             C.x(V[i])
-            C.ccx(g1, V[i], U[i])
+            C.ccx(c1[i % len(c1)], V[i], U[i])
             C.x(V[i])
             C.cx(carry[i], V[i])
         for i in reversed(range(1, m + 1)):
             # B[i] = b ^ g0*(a ^ c), S_i when g0 = 1; then a_i ^= g1 * NOT(S_i ^ c_i).
             C.cx(U[i], carry[i])
-            C.ccx(g0, carry[i], V[i])
+            C.ccx(c0[i % len(c0)], carry[i], V[i])
             C.cx(U[i], carry[i])
             C.cx(carry[i], V[i])
             C.x(V[i])
-            C.ccx(g1, V[i], U[i])
+            C.ccx(c1[i % len(c1)], V[i], U[i])
             C.x(V[i])
             C.cx(carry[i], V[i])
         C.cx(V[0], U[0])
@@ -275,8 +290,11 @@ class DialogMultiplier:
         C.free([cin])
         for wire in V:
             C.x(wire)
-        for wire in V[1:]:
-            C.cx(g1, wire)
+        for j, wire in enumerate(V[1:]):
+            C.cx(c1[j % len(c1)], wire)
+        for tree in trees:
+            for h, t in reversed(tree):
+                C.cx(h, t)
 
     @staticmethod
     def _top_bit(C, mode, g0, A, B, Cw, H):
@@ -406,7 +424,7 @@ class DialogMultiplier:
                     top = "both" if top_clear and narrow else "top_clear" if top_clear else "narrow"
                 C.cx(offset, V[0])
                 C.cx(V[0], g0)
-                self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if keep else None)
+                self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if keep else None, copies)
                 V[:] = V[1:] + V[:1]
                 # A no-subtract tick strips a second bit when V + E is even. held, zero on
                 # entry, is the strip's control: two = NOT g0 AND NOT (V0 ^ E), E still e.
@@ -419,7 +437,8 @@ class DialogMultiplier:
                 C.cx(offset, V[0])
                 C.ccx(held, offset, V[0])
                 # Under held, rotate V[:L] left by one: L - 1 swaps, as _rotate_left's two layers.
-                _rotate_left(C, held, V[:self._strip_len(w, top_clear)], copies)
+                _rotate_left(C, held, V[:self._strip_len(w, top_clear)],
+                             copies[:self._strip_copies(w, top_clear)])
                 # b = s ^ two, the cell's swept bit; then held = s, as two ^ (s ^ two).
                 C.cx(held, b)
                 C.cx(b, held)
@@ -520,7 +539,8 @@ class DialogMultiplier:
                     at += plan[i]
                 # The strip's control copies go on later cells' held wires, which are zero until
                 # their own steps.
-                cp = 0 if last else min(self._strip_copies(w, top_clear), self.iters - 1 - i)
+                cp = 0 if last else min(max(self._strip_copies(w, top_clear), 2 * self.SELECT_COPIES),
+                                        self.iters - 1 - i)
                 if cp:
                     regs.append(held[self.iters - cp:])
                 self.C.apply(self._euclid_step(w, top_clear, narrow, last, plan[i], on_sw, cp), regs)
