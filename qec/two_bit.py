@@ -479,6 +479,7 @@ class TwoBitMod(Mod):
         in place. held is then the previous cell's swap wire holding its mark, which this tick
         turns back into that cell's s with X and CX instead of clearing it with a CCX."""
         n, f, w = self.n, self.f, self.window
+        tick_start = len(C.prims)
         g0, b = g
         if hand is None:
             assert prev is None and nxt is None
@@ -622,6 +623,7 @@ class TwoBitMod(Mod):
             C.x(k0)
             C.cx(k2, g0)
 
+        compare_start = len(C.prims)
         (z,) = C.alloc(1)
         mark_even(z)
         gt_into(C, a[1:], low[1:], k1, ctrl=z)
@@ -658,7 +660,24 @@ class TwoBitMod(Mod):
         if hand is not None:
             hand[:] = [] if nxt is None else ahead
         s[:] = s[-1:] + s[:-1]
-        cswap(C, sw, a, s)
+        # The swap's control goes by a star of CX onto free wires: each is zero, as every wire is
+        # once freed, and the reversed star clears it. Only wires this tick has touched, so its
+        # arity and peak stay, and none touched since the compare began, which would hold the
+        # copies back until the compare is done, and in the inverse hold the compare back.
+        touched = set()
+        for k in (1, 2, 3):
+            touched.update(C.prims[tick_start + k::4])
+        late = set()
+        for k in (1, 2, 3):
+            late.update(C.prims[compare_start + k::4])
+        copies = sorted(touched.intersection(C.free_stack) - late)
+        for c in copies:
+            C.cx(sw, c)
+        ctl = copies or [sw]
+        for j, (u, v) in enumerate(zip(a, s)):
+            cswap(C, ctl[j * len(ctl) // n], [u], [v])
+        for c in reversed(copies):
+            C.cx(sw, c)
         if cell0:
             return None
         if nxt is None:

@@ -644,3 +644,12 @@ No later gate of the block reads x[i] or writes p, so the deferred CX can wait; 
 This is PR #21's commit 5; our `Prefix.write` is the one it rewrote, and it serves the tick's P and M and the square's carry.
 `scripts/prefix_check.py` runs Prefix and write at every length to 14 bits, with and without release and restore, against `3cb492c` on every input and checks bits + t, with dropped-CCX controls; `square_check.py` passes.
 At G: 26,647,800 -> 24,933,111 ticks.
+
+### Copies of the coefficient swap's control
+
+The tick's last step, the controlled swap of R and S under sw, had all 256 CCX on sw, one serial path.
+sw is now copied by a star of CX onto free wires, each copy controls an equal share of the swaps, and the reversed star clears the copies.
+A wire on the free stack is zero, as every wire is when it is freed, so each copy equals sw and the swaps are the same.
+Only wires the tick has touched are used, so the tick's arity and peak do not move; wires touched since the compare began are left out, since their copies would wait on the compare, and in the inverse tick hold its start.
+This is PR #21's commits 2 and 7.
+At G: 24,933,111 -> 23,458,995 ticks.
