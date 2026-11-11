@@ -40,13 +40,45 @@ python3 -I -B scripts/emit.py --hier --out my-circuit.json
 
 The SHA-256 of `my-circuit.json` is `01eab537d5cd4c81680c17d94f0e664f5b616fc9e4818dc15937c839cdbfee00`. The upload wraps those exact bytes in a `SubmittedMethod` with `public_key` set to G. The top-level `artifact_hash` in the board's receipt is the SHA-256 of that upload, `666d5595e59e0755f91acf327cac07884e0fc58226d6abe8ee9b0845c7018457`. Another wrapper, such as one with a different `method_id`, changes that hash and leaves the circuit unchanged, so compare `my-circuit.json` to check your starting point.
 
+That hash is the reference generator's. This branch's generator emits a different circuit, described next.
+
+## This branch
+
+This branch is PR #18 on the board (abdowns, `b9b464a`) plus the qubit-time changes in `DESIGN.md`, from "Qubit-time on PR #18" on. Its circuit is the hierarchical emit after `scripts/post_pass.py`. It has not been on the board yet. Its costs were measured locally with `qcb diagnostic check`, which reported 0 failures on the five published challenge roots and on a random root.
+
+| | Reference | PR #18 | This branch | Board limit |
+|---|---|---|---|---|
+| `lowered_t` | 50,465,933 | 50,135,869 | 50,461,355 | |
+| `qubit_time` | 164,135,627,418 | 3,739,352,040 | 2,969,714,492 | |
+| `toffoli` | 7,209,419 | 7,162,267 | 7,208,765 | |
+| `allocated_wires` | 2,311 | 1,555 | 1,546 | 4,096 |
+| `scheduled_ticks` | 71,023,638 | 2,404,728 | 1,920,902 | |
+| `expanded_ops` charge | 20,960,620 | 18,436,850 | 19,201,248 | 21,696,718 |
+| upload bytes | 43,423,435 | 73,573,976 | 76,683,894 | 104,857,600 |
+
+T is 4,578 under the reference's. Qubit-time is 20.58% under PR #18's. Before the post-passes, the emit with `gate_pass` alone is 1,546 wires × 2,000,528 ticks = 3,092,816,288.
+
+```sh
+python3.12 -I -B scripts/emit.py --hier --out x.circuit.json
+python3.12 -I -B scripts/post_pass.py x.circuit.json x-pp.json --jobs 8 --rounds 300   # about 15 minutes
+python3 wrap.py x-pp.json x.method.json
+```
+
+`wrap.py` is the reference's `SubmittedMethod` wrapper from release `qcb-8376098` of jtaroreh/ecdsafail-v2-reference. The post-pass is deterministic. The SHA-256 values are:
+
+```text
+549f41faacfb85bfca839ff40a469f20ccd1708fbfe6a02c2d4e202bd5aed036  x.circuit.json
+c0d5ab92c5da1a41acefc3ce4564e120e73a50438f4b871d1c545c1cf01a911b  x-pp.json
+06a6f7a66db222e1979144ef467f3345678dde63ff9ad3e0dbaed50f25b391ad  x.method.json
+```
+
 ## What this circuit is
 
 This directory holds a generator for the arithmetic kernel that the `secp256k1-controlled-exact-v1` profile asks for: |c>|R>|0> -> |c>|R + c*A>|0> for a fixed public point A. It covers every R on secp256k1, including infinity and R in {A, -A, -2A}. It is built from the exact core of Schrottenloher's dialog Euclid and Bezout multiplier (arXiv 2606.02235). It is emitted in the challenge's own `ArithmeticCircuit` JSON and checked with the challenge's own executor.
 
 **It does not qualify at 256 bits.** It is exact and complete, and its hierarchical upload passes the live board's sampled test. No route to qualification exists in the repository today. See "Unresolved gates" below.
 
-`DESIGN.md` records the contract reading, the three designs compared, the data shape, and the completeness argument.
+`DESIGN.md` records the contract reading, the three designs compared, the data shape, the completeness argument, and this branch's qubit-time changes.
 
 ## Run
 
@@ -63,11 +95,16 @@ Individual steps:
 PY=python3
 $PY -I scripts/model_check.py                                  # classical dialog model: Euclid trace exhaustive at small q, multiplier sampled
 $PY -I scripts/check.py --toy-bits 4 6 7 8 9 10 --toy-per-size 6   # gate-level exhaustive check on toy curves
+$PY -I -B scripts/check_passes.py                               # the same toy check through split_dirs, gate_pass and reorder_pass
+$PY -I -B scripts/tick_equiv.py                                 # every Bezout tick variant against PR #18's flags, random states
+$PY -I -B scripts/prefix_pebble_check.py                        # the pebbled prefix write, every mode, with mutants
 $PY -I scripts/mutation_control.py                             # negative control for the checker
 $PY -I scripts/component_check.py                              # 256-bit components on boundary inputs
 $PY -I scripts/check.py --secp --secp-random 120               # 256-bit full circuit, sampled
 $PY -I scripts/emit.py --out artifacts/secp256k1_G_circuit.json.gz
 gzip -dc artifacts/secp256k1_G_circuit.json.gz | harness/target/release/qec-harness --circuit - --cases artifacts/secp256k1_cases.json
+$PY -I -B scripts/emit.py --hier --out x.circuit.json
+$PY -I -B scripts/post_pass.py x.circuit.json x-pp.json --jobs 8 --rounds 300   # post-passes on the hierarchical circuit
 ```
 
 Python is stdlib only. The harness is a Rust crate whose dependencies are path references into a sibling checkout of the benchmark at `../ecdsafail-v2`, next to this repository. That checkout is not public until the benchmark is published. It builds offline into `harness/target` and writes nothing into the sibling repo. Receipts were produced against sibling `HEAD 9152f4d` with its existing uncommitted diff (sha256 prefix of `git diff HEAD` is `3eaa988f0901d0d1`).
@@ -85,7 +122,7 @@ Python is stdlib only. The harness is a Rust crate whose dependencies are path r
 
 ## Results
 
-All numbers are measured unless marked as estimates.
+All numbers are measured unless marked as estimates. This section describes the reference circuit. This branch's figures are in "This branch" above.
 
 | | toy q=127 | secp256k1, A = G | cap |
 |---|---|---|---|
