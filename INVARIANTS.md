@@ -8,6 +8,7 @@ The merged path now uses the paired-tick contract D1-D4 in [the mux proof](docs/
 The additional sweep rotates each no-subtract run so B1 is last in Bézout order.
 It runs in Euclid's tail, one cell behind the offset sweep, with which it commutes: the offset sweep's swap acts only on b of g0 = 1 cells, and each B1 step only on b of two g0 = 0 cells.
 So Euclid hands Bézout the B1-swept tape, and inverse Euclid unsweeps it before undoing its steps; this supersedes the placement in S2's last sentence and S17's last sentence of the mux proof, not the maps they state.
+On the raw tape the sweep moved again: Euclid hands Bézout the unswept tape, each tick applies the sweep step into its own cell through a carried toggle wire (`TwoBitMod._sweep_in`), and `_body` unsweeps after the Bézout pass; see DESIGN.md, "The B1 sweep inside the Bezout ticks". The tape every tick reads, and so D1 to D3, are unchanged.
 The tape at rest is block-coded, two wires freed per 15 ticks by `qec/tape_block.py`; on the swept tape every B1 follows a subtract cell in tape order, so the code reads each block's cells last first and relies on the same clause.
 Cells read previous-symbol wires and can write the next g0 across a block edge, so Bézout decodes a block one tick before its first tick and codes it again one tick after its last, and two blocks are decoded across each edge for two ticks.
 The gate's toy primes have at most one block, so the edge path is covered by `scripts/block_check.py` at 20 bits and above and by the secp256k1 rows, not by a toy instance.
