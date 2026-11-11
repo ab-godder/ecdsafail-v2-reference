@@ -184,6 +184,9 @@ class Run:
             "toy-hier": [["check.py", *TOY_ARGS, "--hier", "--out", w / "toy_exhaustive_hier.json"]],
             "components": [["component_check.py"]],
             "mutation": [["mutation_control.py"]],
+            "step": [["step_check.py"]],
+            "prefix": [["prefix_check.py"]],
+            "pass": [["pass_check.py"]],
             "secp-hier": [["check.py", "--secp", "--hier", "--secp-addend", *map(hex, c), "--secp-random", self.secp_points,
                            "--seed", seed, "--out", w / f"secp256k1_hier_{i}.json"] for i, c in enumerate(chunks)],
             **{f"emit:{name}": [["emit.py", *args, "--out", w / "emit" / filename]] for name, (filename, args) in EMITS.items()},
@@ -321,6 +324,26 @@ def i2_model(run):
     note = "; ".join(problems) or (f"{len(small)} primes: Euclid trace and width schedule exhaustive over x, worst run within bound, "
                                    f"multiplier model right on every pair tried; secp256k1 bound {secp['bound']}, {secp['random_pairs']} random products")
     return Result(FAIL if problems else PASS, note, {"exit": p.rc, "rows": rows, "failing": bad, "log": p.log})
+
+
+def _script_row(run, group, what):
+    """A checker script whose exit code is its verdict and whose last line is its summary."""
+    p, = run.procs(group)
+    last = (p.stdout.strip().splitlines() or [""])[-1]
+    problems = [f"exit {p.rc}, see {p.log}"] * bool(p.rc)
+    return Result(FAIL if problems else PASS, "; ".join(problems) or f"{what}: {last}", {"exit": p.rc, "log": p.log})
+
+
+def i2_step(run):
+    return _script_row(run, "step", "every Euclid step variant to width 7 against 3cb492c on every state")
+
+
+def i2_prefix(run):
+    return _script_row(run, "prefix", "Prefix and write to 14 bits against 3cb492c on every input")
+
+
+def i2_pass(run):
+    return _script_row(run, "pass", "depth pass certified per definition at toy-127 and secp256k1 G")
 
 
 @functools.cache
@@ -578,6 +601,9 @@ CHECKS = (
     Check("I2.toy-hier", "exactness: same check on the hierarchical upload", i2_toy_hier, ("toy-hier", "emit:toy127.hier")),
     Check("I2.components", "exactness: 256-bit components on boundary inputs", i2_components, ("components",)),
     Check("I2.mutation", "exactness: the checker rejects mutated circuits", i2_mutation, ("mutation",)),
+    Check("I2.step", "exactness: rewritten Euclid steps equal the reference steps", i2_step, ("step",)),
+    Check("I2.prefix", "exactness: rewritten Prefix.write equals the reference", i2_prefix, ("prefix",)),
+    Check("I2.pass", "exactness: depth pass only reorders commuting ops", i2_pass, ("pass",)),
     Check("I2.secp", "exactness: 256-bit hierarchical upload on exceptional and random points", i2_secp, ("secp-hier", "emit:secp256k1_G.hier")),
     Check("I2.secp-flat", "exactness: 256-bit flat circuit at G", i2_secp_flat, ("secp-flat",), full_only=True),
     Check("I3", "gate set: X, CX, CCX, SWAP only", i3_gate_set, ("toy", "secp-hier", "secp-flat") + EMIT_JOBS),

@@ -37,7 +37,7 @@ def gate_pairs(q: int, pairs, inverse: bool = False, iters: int | None = None) -
     m.apply(X, Y, inverse=inverse)
     assert len(set(X + Y)) == 2 * mod.n, "aliased output register"
     buf = io.StringIO()
-    write_circuit(buf, C, {"control": [], "x": X, "y": Y})
+    write_circuit(buf, C, {"control": [], "x": X, "y": Y}, depth_pass=False)
     ops = expand(flatten.load(io.StringIO(buf.getvalue())))
     structural(ops, C.num_wires)
     xs, values = zip(*pairs)

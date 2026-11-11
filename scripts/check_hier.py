@@ -34,7 +34,8 @@ def flat_digest(gen):
 
 def hier_text(gen):
     buf = io.StringIO()
-    write_circuit(buf, gen.build(hierarchical=True), gen.layout)
+    # The pin is the builder's flat order; the depth pass reorders it, so it is checked without.
+    write_circuit(buf, gen.build(hierarchical=True), gen.layout, depth_pass=False)
     return buf.getvalue()
 
 

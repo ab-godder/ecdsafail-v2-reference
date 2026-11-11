@@ -60,10 +60,13 @@ def _write_list(fh, pieces):
     return total + fh.write("]")
 
 
-def write_circuit(fh, C, layout):
+def write_circuit(fh, C, layout, depth_pass=True):
     """Writes the JSON text to a text-mode handle and returns the counts it
     wrote: json_bytes, plus definitions, call_sites and primitive_ops for a
-    hierarchical circuit, which also gets `definitions`, one per reachable block."""
+    hierarchical circuit, which also gets `definitions`, one per reachable block.
+    With depth_pass, the hierarchical branch runs qec/depth_pass.py over the
+    definition bodies and puts each top-level CCX's controls in canonical order;
+    the flat branch is never changed."""
     live = set(layout["control"]) | set(layout["x"]) | set(layout["y"])
     regs = [
         ("control", "CONTROL", layout["control"]),
@@ -72,21 +75,28 @@ def write_circuit(fh, C, layout):
     ]
     reg_json = ",".join(f'{{"name":"{n}","role":"{r}","wires":[{",".join(map(str, ws))}]}}' for n, r, ws in regs)
     total = fh.write(f'{{"num_wires":{C.num_wires},"registers":[{reg_json}],')
-    calls, ids, counts = [], {}, {}
+    calls, ids, counts, top = [], {}, {}, C.prims
     if C.calls is not None:
         calls = C.calls
+        order = definitions(C)
+        ids = {block: i for i, block in enumerate(order)}
+        bodies = {block: (block.ops, block.calls) for block in order}
+        if depth_pass:
+            from .depth_pass import canonical_top, optimize
+            bodies = optimize(order, ids)
+            top = canonical_top(C.prims)
         total += fh.write('"definitions":[')
-        for i, block in enumerate(definitions(C)):
-            order = sorted(block.wires)
-            local = {w: k for k, w in enumerate(order)}
-            total += fh.write(("," if i else "") + f'{{"arity":{len(order)},"operations":')
-            total += _write_list(fh, _instr_chunks(block.ops, block.calls, ids, local))
+        for i, block in enumerate(order):
+            ops, body_calls = bodies[block]
+            wires = sorted(block.wires)
+            local = {w: k for k, w in enumerate(wires)}
+            total += fh.write(("," if i else "") + f'{{"arity":{len(wires)},"operations":')
+            total += _write_list(fh, _instr_chunks(ops, body_calls, ids, local))
             total += fh.write("}")
-            ids[block] = i
         total += fh.write("],")
-        counts = {"definitions": len(ids), "call_sites": len(calls) + sum(len(b.calls) for b in ids),
-                  "primitive_ops": (len(C.prims) + sum(len(b.ops) for b in ids)) // 4}
+        counts = {"definitions": len(ids), "call_sites": len(calls) + sum(len(c) for _, c in bodies.values()),
+                  "primitive_ops": (len(top) + sum(len(o) for o, _ in bodies.values())) // 4}
     total += fh.write('"operations":')
-    total += _write_list(fh, _instr_chunks(C.prims, calls, ids))
+    total += _write_list(fh, _instr_chunks(top, calls, ids))
     total += fh.write("}")
     return {**counts, "json_bytes": total}

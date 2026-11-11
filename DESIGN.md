@@ -653,3 +653,11 @@ A wire on the free stack is zero, as every wire is when it is freed, so each cop
 Only wires the tick has touched are used, so the tick's arity and peak do not move; wires touched since the compare began are left out, since their copies would wait on the compare, and in the inverse tick hold its start.
 This is PR #21's commits 2 and 7.
 At G: 24,933,111 -> 23,458,995 ticks.
+
+### A depth pass at emission
+
+`qec/depth_pass.py` is upstream's (`origin/main`), unchanged. `write_circuit` runs it on the hierarchical branch by default: per definition it reorders commuting ops by list scheduling under the board's CCX lowering, keeps the input unless a schedule is shorter, and then orients each CCX's controls; the top level only gets canonical control order.
+Its decisions read definition bodies alone, so definitions stay identical over addends.
+The flat branch is never changed, so `check_hier.py` emits with `depth_pass=False` against the flat pin, as do `keep_check.py` and `model_check.py`, which test the builder's M; `check.py --hier` and accept's emissions simulate the passed circuit.
+`scripts/pass_check.py`, which shares no code with the pass, certifies each definition: the same multiset of ops (a CCX's controls as a set), and on every wire the same runs of compatible roles in the same order, so every pair of non-commuting ops keeps its order; an exchanged conflicting pair must be rejected.
+At G: 23,458,995 -> 19,796,016 ticks.
