@@ -6,7 +6,7 @@ from .arith import (Mod, _Gates, _add_selected_tree, _doubling, _emit, _maj, add
 from .builder import Circuit
 from .curve import Curve
 from .square import SquareFold
-from .two_bit import TwoBitMod
+from .two_bit import TwoBitMod, _Idle
 from .model import tick_bound, tick_widths
 from . import block0_code, tail_code, tape_block
 from .tape_block import FREE, TICKS
@@ -169,6 +169,11 @@ RING_BORROW = 300
 U6_OWN_COPIES = 58
 U6_KEEP_COPIES = True
 U6_RING_SELECT = True
+# Take the select's ring copies on the ring wires the sweep frees first under the tick model, at most
+# this many a copy set. The tree's top products clear first and are made again last, so copies there
+# hold up neither sweep; the low products' wires, which the ring's front gives, come free last.
+U6_RING_PICK = True
+U6_RING_COPIES = 80
 # Compute a step's second-strip flag `two` at the step's start instead of after its shared
 # difference, and fan it onto pass-level copies while the shared difference runs. two = 1 implies
 # g0 = 0, and the shared difference is the identity when g0 = 0, so `two` read from V[1] before it
@@ -176,6 +181,9 @@ U6_RING_SELECT = True
 # flag does not wait for the previous step's uncompute; the copies are shared.
 TWO_EARLY = True
 TWO_COPIES = 200
+# Every this many Bezout ticks, one whose add takes the backward chain instead of the tree (0 = none):
+# the chain has fewer CCX and more ticks, so this sets how many CCX the tree takes in all.
+CHAIN_EVERY = 0
 # Wires for the Euclid pass's B1 marks; 0 keeps the one mark wire.
 MARK_POOL = 8
 
@@ -237,6 +245,7 @@ def shared_difference_u6(C, U, V, g0, g1, ring, peek=None, off=None):
     else:
         G0, G1 = list(ring[:r]), list(ring[r:2 * r])
     (cin,) = C.alloc(1)
+    start = len(C.prims)
     for wire in V:
         C.x(wire)
     up = _Gates()
@@ -267,8 +276,13 @@ def shared_difference_u6(C, U, V, g0, g1, ring, peek=None, off=None):
     S0, S1, extra = G0, G1, []
     if U6_OWN_COPIES and U6_RING_SELECT:
         # The sweep has left its ring clean: copy the copies onto it for the select.
-        rr = min(len(ring) // 2, w - r)
-        R0, R1 = list(ring[:rr]), list(ring[rr:2 * rr])
+        rr = min(len(ring) // 2, w - r, U6_RING_COPIES)
+        if U6_RING_PICK:
+            ready = _Idle(C, start).ready()
+            pick = sorted(ring, key=lambda x: ready.get(x, 0))[:2 * rr]
+            R0, R1 = pick[0::2], pick[1::2]
+        else:
+            R0, R1 = list(ring[:rr]), list(ring[rr:2 * rr])
         for j in range(rr):
             extra += [(G0[j % r], R0[j]), (G1[j % r], R1[j])]
         for a, t in extra:
@@ -813,10 +827,11 @@ class DialogMultiplier:
             self._bezout_step = C.record_shape(step, [2, mod.n, mod.n])
         return self._bezout_step
 
-    def _bezout_tick(self, first, last, pebble=False, consume=False, produce=False):
+    def _bezout_tick(self, first, last, pebble=False, consume=False, produce=False, chain=False):
         """consume: the previous cell's B1 mark arrives on a wire from the tick before.
-        produce: this tick leaves the next tick's mark, NOR of its own cell, on a given clean wire."""
-        key = first, last, pebble, consume, produce
+        produce: this tick leaves the next tick's mark, NOR of its own cell, on a given clean wire.
+        chain: the tick's add takes the backward chain rather than two_bit.LA_TREE_B's tree."""
+        key = first, last, pebble, consume, produce, chain
         if key not in self._bezout_ticks:
             C, n = self.C, self.mod.n
 
@@ -826,7 +841,11 @@ class DialogMultiplier:
                                  pout=pout[0] if pout else None)
 
             sizes = [0 if first else 2, 2, 0 if last else 1, n, n, int(consume), int(produce)]
-            self._bezout_ticks[key] = C.record_shape(tick, sizes)
+            self.narrow.chain_back = chain
+            try:
+                self._bezout_ticks[key] = C.record_shape(tick, sizes)
+            finally:
+                self.narrow.chain_back = False
         return self._bezout_ticks[key]
 
     def _b1_step(self, G, i, both):
@@ -915,7 +934,8 @@ class DialogMultiplier:
                     assert mark_at == (len(C.prims), len(C.calls or ())) and not first
                 pin = [hand] if consume else []
                 pout = C.alloc(1) if produce else []
-                C.apply(self._bezout_tick(first, last, pebble, consume, produce),
+                chain = bool(CHAIN_EVERY) and i % CHAIN_EVERY == CHAIN_EVERY // 2
+                C.apply(self._bezout_tick(first, last, pebble, consume, produce, chain),
                         [prev, G[2 * i:2 * i + 2], nxt, Yr, S, pin, pout])
                 C.free(pin)
                 hand = pout[0] if produce else None

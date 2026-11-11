@@ -18,6 +18,11 @@ from .two_bit import Prefix
 # Add the square's rows as lookahead trees, on ROW_TEMPS clean wires beside the fold's own.
 ROW_TREE = True
 ROW_TEMPS = 24
+# With ROW_TREE, a row is a tree only if it has at least this many bits, per run of rows: the low
+# half's, the high half's (these two run side by side) and the halves' sum's (alone, and the whole
+# run without SPLIT_ROWS). A chain has fewer CCX and more ticks; the halves' rows give up the fewest
+# ticks for their CCX, since the two runs slow down together.
+ROW_TREE_MIN = (126, 126, 16)
 # Fan each row's Gray-code step out through at most this many copies on clean temps, and undo the walk
 # by a prefix network; 0 runs both as CX chains.
 ROW_FAN_COPIES = 63
@@ -33,6 +38,10 @@ FOLD_TEMPS = 120
 # halves of Q, and the pairs across the halves come from the rows of the halves' sum, a quarter
 # fewer row bits in all. The sum's rows and the sum stay on junk wires.
 SPLIT_ROWS = True
+# The split's adds as trees (else chains): the halves' sum, the three takes into K, K into Q. As
+# chains the takes and K's add keep 2,858 CCX a square for 208 more ticks (square alone); the sum's
+# add would keep 264 for 473.
+SPLIT_TREE = (True, False, False)
 
 
 def _add(C, a, b, cin=None, temps=()):
@@ -118,11 +127,12 @@ class SquareFold:
             gt_into(C, a, b, top, ctrl)
         C.free([top, t])
 
-    def _pair_rows(self, C, Y, Q, temps, cin=None):
+    def _pair_rows(self, C, Y, Q, temps, cin=None, run=2):
         """Q += the sum over i < j of (y_i ^ y_j)*2^(i + j), with Q below 2^len(Y) on entry. After
         row i, Q < 2^(len(Y) + i + 1), so each carry lands on a wire no earlier row reached. Y's wires
         walk through their Gray code. The rows add in series, each with add_lookahead on clean temps.
-        cin: a clean wire for the adds' carry in, so that two runs side by side share no wire."""
+        cin: a clean wire for the adds' carry in, so that two runs side by side share no wire.
+        run: which ROW_TREE_MIN applies."""
         n = len(Y)
         for i in range(n - 1):
             if ROW_FAN_COPIES:
@@ -132,7 +142,8 @@ class SquareFold:
             else:
                 for w in Y[i + 1:]:
                     C.cx(Y[i], w)
-            add_lookahead(C, Y[i + 1:], Q[2 * i + 1:n + i], Q[n + i], temps, tree=ROW_TREE, cin=cin)
+            tree = ROW_TREE and n - 1 - i >= ROW_TREE_MIN[run]
+            add_lookahead(C, Y[i + 1:], Q[2 * i + 1:n + i], Q[n + i], temps, tree=tree, cin=cin)
         if ROW_FAN_COPIES:
             prefix_xor(C, Y)
         else:
@@ -171,21 +182,21 @@ class SquareFold:
         cut = len(spare) // 2
         for y, q in zip(Y0, lo):
             C.cx(y, q)
-        self._pair_rows(C, Y0, lo, spare[1:cut], spare[0])
-        self._pair_rows(C, Y1, hi, spare[cut + 1:], spare[cut])
+        self._pair_rows(C, Y0, lo, spare[1:cut], spare[0], run=0)
+        self._pair_rows(C, Y1, hi, spare[cut + 1:], spare[cut], run=1)
         start = len(C.prims)
         for y, s in zip(Y0, S):
             C.cx(y, s)
         pad = C.alloc(h - len(Y1))
-        add_lookahead(C, Y1 + pad, S[:h], S[h], temps, tree=True, cin=cin)
+        add_lookahead(C, Y1 + pad, S[:h], S[h], temps, tree=SPLIT_TREE[0], cin=cin)
         made = C.prims[start:]
-        self._pair_rows(C, S, K, temps, cin)
+        self._pair_rows(C, S, K, temps, cin, run=2)
 
         def take(addend, target):
             fill = C.alloc(len(target) - len(addend))
             for w in target:
                 C.x(w)
-            add_lookahead(C, list(addend) + fill, target, None, temps, tree=True, cin=cin)
+            add_lookahead(C, list(addend) + fill, target, None, temps, tree=SPLIT_TREE[1], cin=cin)
             for w in target:
                 C.x(w)
             C.free(fill)
@@ -201,7 +212,7 @@ class SquareFold:
         # S is clean again: it pads K to the width of Q above bit h, and the rest joins the temps.
         target = Q[h:]
         fill = len(target) - len(K)
-        add_lookahead(C, list(K) + S[:fill], target, None, temps + S[fill:], tree=True, cin=cin)
+        add_lookahead(C, list(K) + S[:fill], target, None, temps + S[fill:], tree=SPLIT_TREE[2], cin=cin)
         C.free(extra)
         C.free(S)
 
