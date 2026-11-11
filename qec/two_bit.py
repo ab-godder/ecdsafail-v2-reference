@@ -271,14 +271,18 @@ WIDE_ASIDE = True
 # other wires, and may take up to IDLE_FRESH wires the tick has not touched when none is.
 IDLE_SLACK = -8
 IDLE_FRESH = 0
+# Scratch wires a tick may touch before _untouched hands out touched wires instead (0 = no cap).
+TOUCH_CAP = 318
 
 
 class _Idle:
     """When each wire this tick has touched comes free, under the board's tick model with the
     tick alone (every wire free at its start)."""
 
-    def __init__(self, C, start):
+    def __init__(self, C, start, io=()):
         self.C, self.pos, self.r, self.fresh = C, start, {}, 0
+        # The tick's own registers, and every wire handed out: what counts toward TOUCH_CAP.
+        self.io, self.handed = set(io), set()
 
     def ready(self):
         r, ops = self.r, self.C.prims
@@ -318,7 +322,20 @@ class _Idle:
         return w
 
     def _untouched(self):
-        """A clean wire this tick has not touched: off the stack when it holds one, else a new wire."""
+        """A clean wire this tick has not touched: off the stack when it holds one, else a new wire.
+        With TOUCH_CAP scratch wires touched already, the touched free wire that comes free first."""
+        C, r = self.C, self.ready()
+        if TOUCH_CAP and len((set(r) | self.handed) - self.io) >= TOUCH_CAP:
+            touched = [w for w in C.free_stack if w in r]
+            if touched:
+                w = touched[self.first(touched)]
+                C.free_stack.remove(w)
+                return w
+        w = self._new()
+        self.handed.add(w)
+        return w
+
+    def _new(self):
         C, r = self.C, self.r
         for w in reversed(C.free_stack):
             if w not in r:
@@ -336,6 +353,7 @@ class _Idle:
             touched = [w for w in C.free_stack if w in r]
             if not touched:
                 out += type(C).alloc(C, 1)
+                self.handed.add(out[-1])
                 continue
             w = touched[self.first(touched)]
             C.free_stack.remove(w)
@@ -1228,7 +1246,8 @@ class TwoBitMod(Mod):
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally."""
         n, f, w = self.n, self.f, self.window
         tick_start = len(C.prims)
-        early_idle = _Idle(C, tick_start) if IDLE_FROM_START and IDLE_WIRES else None
+        io = [w for r in (prev or (), g, a, s) for w in r] + [w for w in (nxt, pin, pout) if w is not None]
+        early_idle = _Idle(C, tick_start, io) if IDLE_FROM_START and IDLE_WIRES else None
         if early_idle:
             C.alloc = early_idle.alloc
         g0, b = g
