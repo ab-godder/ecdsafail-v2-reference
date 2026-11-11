@@ -415,7 +415,37 @@ class TwoBitMod(Mod):
             C.cx(o, c)
         C.free([cin, D, t])
 
-    def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None):
+    def _sweep_in(self, C, g0, b, sw, up, nxt, tau):
+        """The B1 sweep's step into this cell, on an unswept tape read top down.
+
+        Sweep step k swaps b_k and b_(k-1) when g0_k = g0_(k-1) = 0. On the tape no B1 has a
+        no-subtract cell above it in Euclid order, so that b_(k-1) is 1, and the step toggles both
+        bits by t_k = NOT g0_k AND NOT g0_(k-1) AND NOT x_k, with x_k = b_k XOR t_(k+1) this cell's
+        bit after the step above. tau holds t_(k+1) on entry, and b holds x_k, sw = g0_k AND x_k.
+        t_(k+1) = NOT g0_(k+1) AND B1_k with B1_k = NOT g0_k AND NOT x_k, since x_k = 0 when t_(k+1)
+        is 1 and b_k = 1 below a no-subtract cell, so t_k = t_(k+1) XOR B1_k AND (g0_(k-1) XOR
+        g0_(k+1)), one CCX. up is g0_(k+1), or None on a pass's first tick, where tau is 0 and
+        g0_(k+1) is taken as 1. On return tau holds t_k and b the swept bit x_k XOR t_k; sw is
+        unchanged, as t_k implies NOT g0_k."""
+        C.x(sw)
+        C.cx(g0, sw)
+        C.cx(b, sw)
+        if up is None:
+            C.x(nxt)
+        else:
+            C.cx(up, nxt)
+        C.ccx(sw, nxt, tau)
+        if up is None:
+            C.x(nxt)
+        else:
+            C.cx(up, nxt)
+        C.cx(b, sw)
+        C.cx(g0, sw)
+        C.x(sw)
+        C.cx(tau, b)
+
+    def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None,
+             tau=None):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally.
 
@@ -428,7 +458,11 @@ class TwoBitMod(Mod):
         the previous cell is B1 and 0 otherwise; this tick uses them as word's top two wires. On
         return, hand holds this tick's pair for the next tick, or is empty when nxt is None.
         hand may be None only when there is neither a previous nor a next cell.
-        sw and [prev is B1] each stay on one wire for the whole tick."""
+        sw and [prev is B1] each stay on one wire for the whole tick.
+
+        tau, when given, carries the B1 sweep through an unswept tape: it holds the toggle the
+        sweep step above leaves on this cell, and on return the one this cell's step leaves on the
+        next, or 0 after cell 0. See _sweep_in."""
         n, f, w = self.n, self.f, self.window
         g0, b = g
         if hand is None:
@@ -443,9 +477,24 @@ class TwoBitMod(Mod):
             p = held
         else:
             p = self._after_b1(C, prev)
+        up = prev[0] if prev else None
+        if tau is not None:
+            C.cx(tau, b)
         if cell0:
+            if tau is not None and up is not None:
+                # t_1 = NOT g0_1 AND B1_0, and B1_0 = NOT x_0 because g0_0 implies x_0. t_0 = 0.
+                C.x(b)
+                C.x(up)
+                C.ccx(b, up, tau)
+                C.x(up)
+                C.x(b)
             sw = g0
             C.cx(g0, b)
+        elif tau is not None:
+            (sw,) = C.alloc(1)
+            C.ccx(g0, b, sw)
+            self._sweep_in(C, g0, b, sw, up, nxt, tau)
+            C.cx(sw, b)
         else:
             sw = self._begin(C, g0, b)
         if p is not None:

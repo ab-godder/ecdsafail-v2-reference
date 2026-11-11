@@ -561,3 +561,26 @@ Each bit's descent produces the same U, V and g1 values as both chains do, so th
 The circuit loses 212 CCX, 4 for each of those 53 carries, at 3,187,369 CCX and 4,096 wires.
 The required toy checks never build a partial tick, because toy plans fit in `KEEP`, so `scripts/keep_check.py` sets `KEEP` to every value from 0 to each prime's full plan (every odd prime below 600; 1,881 builds, 1,231 with a partial tick) and gate-checks every x with six y values, forward and inverse, at zero bad lanes.
 With the restoring CCX of bit m + 1 removed, that run reports 26,268 bad lanes.
+
+## The B1 sweep inside the Bezout ticks
+
+On the merged path with a raw tape, the Euclid pass no longer runs the B1 sweep; the Bezout pass sweeps the tape as it reads it, and `_body` unsweeps it after the pass, before the inverse Euclid pass, with the old sweep's gates reversed.
+This supersedes the placement in "Current mux contract": Euclid hands Bezout the unswept tape, and the map Bezout applies to it is unchanged.
+
+Sweep step k swaps b_k and b_(k-1) when g0_k = g0_(k-1) = 0, for k from T - 2 down to 1, so it runs in the Bezout pass's order.
+By S1, no B1 has a no-subtract cell above it in Euclid order, so when both g0 are 0, b_(k-1) is 1 when step k runs, and step k toggles b_k and b_(k-1) by t_k = NOT g0_k AND NOT g0_(k-1) AND NOT x_k, where x_k = b_k XOR t_(k+1) is b_k after step k + 1.
+If t_(k+1) = 1 then x_k = 0, and if NOT g0_(k+1) AND NOT g0_k then b_k = 1, so t_(k+1) = NOT g0_(k+1) AND B1_k with B1_k = NOT g0_k AND NOT x_k.
+So t_k = t_(k+1) XOR B1_k AND (g0_(k-1) XOR g0_(k+1)).
+
+A wire tau carries t_(k+1) into tick k (`TwoBitMod._sweep_in`).
+The tick XORs tau into b, making x_k; `_begin`'s CCX makes sw = g0 AND x_k; sw XOR g0 XOR b XOR 1 is B1_k, so one CCX with g0_(k+1) XOR g0_(k-1) on the next cell's g0 wire moves tau to t_k; then tau XORs into b again, which leaves the swept bit x_k XOR t_k there.
+sw is still g0 AND b, because t_k implies NOT g0_k.
+The rest of the tick reads the swept cell as before, and step k's toggle of b_(k-1) is the next tick's first XOR.
+The pass's first tick has no previous cell and tau = 0 there; it takes g0_(k+1) as 1, so the CCX gives t_k by its definition.
+Cell 0 has g0 implies b, so B1_0 = NOT x_0, and one CCX, tau ^= NOT g0_1 AND NOT x_0, clears tau, since t_1 = NOT g0_1 AND B1_0 and t_0 = 0.
+The tape the pass leaves is the swept one, cell by cell, so `_body` applies the sweep's inverse, which restores the tape the inverse Euclid pass expects.
+
+Per M application this removes the Euclid pass's sweep, 765 CCX, and adds one CCX to each of the 381 tick calls, one at cell 0, and one wire live through the Bezout pass, which takes `KEEP` from 2399 to 2398.
+At G: 3,187,369 -> 3,186,609 CCX (-760), 22,311,583 -> 22,306,263 T, 4,096 wires.
+Removing tau's CCX in `_sweep_in`, or ignoring tau in the tick, gives 41,988 bad lanes over the merged odd primes below 600 in `keep_check.py`'s multiplier check; both builds as committed give zero.
+The Euclid pass keeps a `sweep` flag, on by default, so `model_check.py` and `utape_check.py` still check the swept pass.

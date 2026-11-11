@@ -19,7 +19,7 @@ class DialogMultiplier:
     # nothing between reads past, so the passes are the same maps on the same states.
     RAW_TAPE = True
     # Carries the forward pass keeps for the inverse pass to clear, each saving one CCX per pass.
-    KEEP = 2399
+    KEEP = 2398
 
     def __init__(self, C, mod):
         self.C, self.mod = C, mod
@@ -424,7 +424,8 @@ class DialogMultiplier:
         return self._euclid_tick0_block
 
     def _euclid_pass(self, U: list[int], pool: list[int], held: list[int],
-                     block0_raw: bool = False, kept: list[int] | None = None) -> None:
+                     block0_raw: bool = False, kept: list[int] | None = None,
+                     sweep: bool = True) -> None:
         # The pool starts as V plus clean external tape. It ends as the zero wires U did not
         # take back, then tape; U ends as its low wires and those zero wires. The boundary is a
         # permutation of U and the pool together. held, iters wires, starts zero and ends with
@@ -472,41 +473,15 @@ class DialogMultiplier:
         # Sweep down, coding each block as it finishes, once the B1 step that reads its
         # bottom cell has run.
         T, swept, clean = self.iters, self.swept, []
-        both = None
+        # Without sweep the pass leaves the tape unswept, for a Bezout pass that sweeps it inline.
+        assert sweep or not self.blocks
 
-        def mark(k):
-            self.C.x(G[2 * k])
-            self.C.x(G[2 * k - 2])
-            self.C.ccx(G[2 * k], G[2 * k - 2], both)
-            self.C.x(G[2 * k - 2])
-            self.C.x(G[2 * k])
+        def done(i):
+            k = i + 1 if swept else i
+            if k % TICKS == 0 and k // TICKS < self.blocks:
+                clean.extend(self._encode(G, k // TICKS, swept))
 
-        # The pass reaches (1, 0) within T ticks: its last subtract leaves E = 0, and each
-        # no-subtract cell after it has b = 1. So when cells T - 1 and T - 2 are both
-        # no-subtract their b are equal: the B1 step between them never swaps, and mark(T - 2)
-        # is made at once.
-        late = swept and T >= 3
-        if swept and T >= 2:
-            (both,) = self.C.alloc(1)
-            mark(T - 2 if late else T - 1)
-        for i in range(T - 1, -1, -1):
-            if swept and i + 1 < T and not (late and i == T - 2):
-                k = i + 1
-                self._b1_step(G, k, both)
-                if k >= 2:
-                    # Turn mark(k,k-1) into mark(k-1,k-2) before any encode.
-                    self.C.cx(G[2 * k - 4], G[2 * k])
-                    self.C.x(G[2 * k - 2])
-                    self.C.ccx(G[2 * k - 2], G[2 * k], both)
-                    self.C.x(G[2 * k - 2])
-                    self.C.cx(G[2 * k - 4], G[2 * k])
-                else:
-                    mark(1)
-            done = i + 1 if swept else i
-            if done % TICKS == 0 and done // TICKS < self.blocks:
-                clean.extend(self._encode(G, done // TICKS, swept))
-        if both is not None:
-            self.C.free([both])
+        self._b1_sweep(G, swept and sweep, done)
         self.C.free(E)
         # Block 0's free wires take their places among the zero words raw, and block 0 is coded
         # last, unless block0_raw leaves that to the caller.
@@ -521,6 +496,45 @@ class DialogMultiplier:
         if raw and not block0_raw:
             self._code_block0(U, pool)
 
+    def _b1_sweep(self, G, b1=True, done=None):
+        """Rotate each no-subtract run of the tape G so B1 is last in Bezout order, cell T - 1 down
+        to 0, calling done(i) once cell i's steps are over; with b1 False only done runs."""
+        T = self.iters
+        both = None
+
+        def mark(k):
+            self.C.x(G[2 * k])
+            self.C.x(G[2 * k - 2])
+            self.C.ccx(G[2 * k], G[2 * k - 2], both)
+            self.C.x(G[2 * k - 2])
+            self.C.x(G[2 * k])
+
+        # The pass reaches (1, 0) within T ticks: its last subtract leaves E = 0, and each
+        # no-subtract cell after it has b = 1. So when cells T - 1 and T - 2 are both
+        # no-subtract their b are equal: the B1 step between them never swaps, and mark(T - 2)
+        # is made at once.
+        late = b1 and T >= 3
+        if b1 and T >= 2:
+            (both,) = self.C.alloc(1)
+            mark(T - 2 if late else T - 1)
+        for i in range(T - 1, -1, -1):
+            if b1 and i + 1 < T and not (late and i == T - 2):
+                k = i + 1
+                self._b1_step(G, k, both)
+                if k >= 2:
+                    # Turn mark(k,k-1) into mark(k-1,k-2) before any encode.
+                    self.C.cx(G[2 * k - 4], G[2 * k])
+                    self.C.x(G[2 * k - 2])
+                    self.C.ccx(G[2 * k - 2], G[2 * k], both)
+                    self.C.x(G[2 * k - 2])
+                    self.C.cx(G[2 * k - 4], G[2 * k])
+                else:
+                    mark(1)
+            if done is not None:
+                done(i)
+        if both is not None:
+            self.C.free([both])
+
     def _bezout(self):
         if self._bezout_step is None:
             C, mod = self.C, self.mod
@@ -531,22 +545,31 @@ class DialogMultiplier:
             self._bezout_step = C.record_shape(step, [2, mod.n, mod.n])
         return self._bezout_step
 
-    def _bezout_tick(self, first, last, pebble=False):
-        if (first, last, pebble) not in self._bezout_ticks:
+    def _bezout_tick(self, first, last, pebble=False, inline=False):
+        key = (first, last, pebble, inline)
+        if key not in self._bezout_ticks:
             C, n = self.C, self.mod.n
 
-            def tick(prev, g, nxt, R, S, flag, hand):
+            def tick(prev, g, nxt, R, S, *rest):
+                *tau, flag, hand = rest
                 # flag comes in holding [previous cell is B1], or 0 on a first tick, which has no
                 # previous cell, and goes out holding [this cell is B1], or empty after the last.
                 # hand carries a B1's top two bits to the next tick the same way, zero elsewhere.
+                # tau, with inline, carries the B1 sweep's toggle from tick to tick.
                 out = self.narrow.tick(C, prev or None, g, nxt[0] if nxt else None, R, S,
                                        pebble=pebble, held=None if first else flag[0],
-                                       cell0=last, hand=hand)
+                                       cell0=last, hand=hand, tau=tau[0][0] if tau else None)
                 flag[:] = [] if out is None else [out]
 
-            sizes = [0 if first else 2, 2, 0 if last else 1, n, n, 1, 2]
-            self._bezout_ticks[first, last, pebble] = C.record_shape(tick, sizes)
-        return self._bezout_ticks[first, last, pebble]
+            # flag and hand come last: a last tick's output leaves them empty.
+            sizes = [0 if first else 2, 2, 0 if last else 1, n, n] + ([1] if inline else []) + [1, 2]
+            self._bezout_ticks[key] = C.record_shape(tick, sizes)
+        return self._bezout_ticks[key]
+
+    @property
+    def inline_sweep(self):
+        """The Bezout pass sweeps B1 itself, on a tape the Euclid pass leaves unswept."""
+        return self.swept and not self.blocks
 
     def _b1_step(self, G, i, both):
         """Use the pass-wide mark while both cells are still raw."""
@@ -585,6 +608,8 @@ class DialogMultiplier:
         lo = 2 * (T - tail_code.CELLS)
         tail_encoded = False
         flag, hand = [], []
+        inline = self.inline_sweep
+        tau = C.alloc(1) if inline else []
         for i in reversed(range(T)):
             nxt_block = i // TICKS - 1
             if i % TICKS == 0 and 0 <= nxt_block < self.blocks:
@@ -623,8 +648,8 @@ class DialogMultiplier:
                 if not hand:
                     # No tick before this one handed a pair over, so its cell is not B1.
                     hand = C.alloc(2)
-                C.apply(self._bezout_tick(first, last, pebble),
-                        [prev, G[2 * i:2 * i + 2], nxt, Yr, S, flag, hand])
+                C.apply(self._bezout_tick(first, last, pebble, inline),
+                        [prev, G[2 * i:2 * i + 2], nxt, Yr, S] + ([tau] if inline else []) + [flag, hand])
             prev_block = (i + 1) // TICKS
             if (i + 1) % TICKS == 0 and i + 1 < T and prev_block < self.blocks:
                 C.free(self._encode(G, prev_block, swept))
@@ -635,6 +660,7 @@ class DialogMultiplier:
                 C.free([W[tail_code.FREE[0]]])
                 G[lo + tail_code.FREE[0]] = None
         assert not flag and not hand
+        C.free(tau)
         if self.blocks and not block0_raw:
             C.free(self._encode(G, 0, swept))
         if tail:
@@ -657,7 +683,9 @@ class DialogMultiplier:
         raw0 = self.swept and self.blocks > 0
         held = C.alloc(T)
         kept = C.alloc(sum(self.kept_plan()))
-        E = C.run(lambda U, pool, held, kept: self._euclid_pass(U, pool, held, raw0, kept),
+        inline = self.inline_sweep
+        E = C.run(lambda U, pool, held, kept: self._euclid_pass(U, pool, held, raw0, kept,
+                                                                sweep=not inline),
                   [U, pool, held, kept])
         if raw0:
             self._code_block0(U, pool)
@@ -670,6 +698,9 @@ class DialogMultiplier:
         C.x(U[0])
         S = U
         self._bezout_pass(G, Yr, S, raw0)
+        if inline:
+            # Bezout swept the tape it read; the inverse pass needs it unswept.
+            C.apply(C.record(lambda G: self._b1_sweep(G), [G]), [G], inverse=True)
         if raw0:
             raw = [G[slot] for slot in self._free_slots(0, True)]
             for slot in self._free_slots(0, True):
