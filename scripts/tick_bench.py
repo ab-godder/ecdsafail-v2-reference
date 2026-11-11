@@ -110,9 +110,9 @@ def _instrument(rec):
     wrap(wide.LowAdd, "write", "low2write")
     orig_init = wide.PrefixTree.__init__
 
-    def pinit(self, C, bits, block=4):
+    def pinit(self, C, bits, *a, **k):
         s = len(rec.prims) // 4
-        orig_init(self, C, bits, block)
+        orig_init(self, C, bits, *a, **k)
         PHASES.append((f"Ptree{len(bits)}", s, len(rec.prims) // 4))
     wide.PrefixTree.__init__ = pinit
     orig_low = wide.LowAdd.__init__

@@ -22,7 +22,8 @@ from functools import lru_cache
 import heapq
 
 from . import wide
-from .arith import Mod, _Gates, _emit, _maj, _selected_carry, adjacent_xor, cswap, gt_into
+from .arith import (Mod, _Gates, _emit, _lookahead_tree, _maj, _selected_carry, adjacent_xor, cswap, gt_into,
+                    tree_temps)
 
 
 @lru_cache(maxsize=None)
@@ -214,13 +215,23 @@ WIDE_CMP = (2, 3, 4, 5)
 WIDE_ADD = 9
 # The add's blocks ramp from 1 up to WIDE_ADD at both ends, each size this many times.
 WIDE_ADD_RAMP = 1
-WIDE_ADD_COPIES = 24
+WIDE_ADD_COPIES = 26
 # The add's backward sweep in its own blocks, (top, ramp) as above (None = the forward sweep's).
 # Its chain costs 11 ticks a block against the forward chain's 7, so its blocks are larger.
 WIDE_ADD_BACK = (10, (2, 1))
-# Explicit block sizes, bottom up, for the forward and backward sweeps at the width they sum to.
-WIDE_ADD_FSIZES = (1, 1, 2, 2, 3, 4, 5, 6, 6, 8, 9, 9, 11, 10, 12, 9, 6, 14, 10, 8, 9, 10, 15, 9, 13, 9, 11, 11, 5, 8, 6, 6, 2, 3, 2)
+# Explicit block sizes, bottom up, for the forward and backward sweeps at the width they sum to. F's
+# are from scripts/tick_search.py at 1.46 ticks a CCX with the backward tree (42 blocks, 21 CCX fewer
+# than the 35 tuned for the backward chain); B's serve the backward chain (a tick with chain_back).
+WIDE_ADD_FSIZES = (1, 1, 1, 1, 3, 3, 2, 5, 3, 6, 9, 5, 8, 12, 8, 13, 11, 9, 13, 10, 17, 10, 13, 8, 11, 4, 10, 10, 9,
+                   8, 7, 1, 4, 5, 2, 4, 1, 2, 2, 1, 1, 1)
 WIDE_ADD_BSIZES = (1, 1, 1, 1, 3, 4, 5, 3, 6, 6, 5, 8, 7, 7, 9, 5, 8, 10, 10, 10, 9, 9, 7, 10, 11, 11, 10, 11, 11, 10, 9, 8, 6, 7, 6, 4, 3, 2, 1)
+# The add's backward sweep as the gates of arith's Brent-Kung lookahead tree, in blocks of this many
+# bits, in reverse (0 = F's blocks backwards), with the second wave through J's copies. The backward
+# chain steps 11 ticks a block, since each block's step waits for the block above to stop reading its
+# carry; the tree is log depth for ~93 more CCX a tick. On the whole circuit, with F's blocks
+# retuned: about -100 ticks a tick for +72 CCX. (The forward sweep as the same tree saved 69 ticks
+# for 102 more CCX on the bench, less than the CCX are worth.)
+LA_TREE_B = 1
 # Run the add's first CX wave through U as a log-depth network, and fan p into the word through
 # copies. The forward sweep's blocks then start together instead of one bit a tick.
 WIDE_WAVE = True
@@ -228,6 +239,10 @@ WIDE_WAVE = True
 WAVE_SEG = 64
 # Hand out the add's copies of J by when each comes free, not in turn.
 COPY_IDLE = True
+# Copies of J the rotation takes beyond WIDE_ADD_COPIES, on the sweeps' temps once they are done.
+# With the backward tree the rotation starts after the sweep's last bit, not beside the chain, and
+# 26 copies serve ~10 swaps each in series; more copies for the whole add would raise its peak.
+ROT_EXTRA = 102
 # The second wave too. Left serial, it follows the backward sweep down the word, and the rotation
 # starts on the middle bits meanwhile; as a network it waits for the sweep's last bit.
 WIDE_WAVE_BACK = False
@@ -545,10 +560,15 @@ class _LaTemps:
 
 
 def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, fsizes=None,
-                    bsizes=None):
+                    bsizes=None, tree_b=None):
     """k2f / k2b: number of 2-blocks in F / B (None = as many as fit); fsizes / bsizes, when given,
     F's / B's block sizes bottom up instead. Wires: cin, ntemps temps, carry and t for the top,
-    ncopies copies of J: 1 + ntemps + 2 + ncopies (14 by default)."""
+    ncopies copies of J: 1 + ntemps + 2 + ncopies (14 by default). tree_b: LA_TREE_B for this add
+    (None = the flag)."""
+    if tree_b is None:
+        tree_b = LA_TREE_B
+    # The backward wave through J's copies with the tree: one wire into every bit would hold it up.
+    wave_back = WIDE_WAVE_BACK or bool(tree_b)
     m = n - 1
     if k2f is None:
         k2f = m
@@ -641,7 +661,14 @@ def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, f
     C.ccx(cm, J, carry)
 
     # B runs F's blocks backwards: f V = f p on every lane, so the same steps undo the carries.
-    bb = _la_blocks(bsizes or _la_spread(m, k2b))
+    if tree_b:
+        # F's map is (x, V) -> (f, V) with f_(s+1) = x_(s+1) ^ V_s f_s, and V now differs from F's
+        # only where f is 0, so F's map on the new V still sends x to f. Any exact sweep of that map
+        # with clean temps, run backwards, sends f back to x: the tree's gates in reverse.
+        fwd = _Gates()
+        _lookahead_tree(fwd, U[:m + 1], [None] + V, temps, tree_b)
+        _emit(C, reversed(fwd.ops))
+    bb = [] if tree_b else _la_blocks(bsizes or _la_spread(m, k2b))
     # Each block's inner unfixes read U[s] = f_s, which the next block down overwrites. The first
     # needs no temp, so all of those go first; then the chain runs down one CCX a block.
     for s, r in bb:
@@ -667,7 +694,7 @@ def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, f
                 C.ccx(T[i - 1], V[s + i], T[i])
                 temps.give(T[i])
 
-    if WIDE_WAVE and WIDE_WAVE_BACK:
+    if WIDE_WAVE and wave_back:
         _emit(C, reversed(wave.ops))
         for j in reversed(range(m)):
             C.cx(U[j + 1], V[j])
@@ -684,11 +711,26 @@ def add_or_shift_la(C, J, a, word, n, k2f=None, k2b=None, ntemps=5, ncopies=6, f
         C.ccx(c, x, y)
         C.cx(y, x)
 
+    extra = []
+    if ROT_EXTRA:
+        # The sweeps are done and their temps clean: more copies of J for the rotation alone, on
+        # those temps, so that the add's peak (the sweeps') keeps its few copies.
+        C.free(tw)
+        extra = C.alloc(min(ROT_EXTRA, len(tw)))
+        tw = []
+        for j, e in enumerate(extra):
+            C.cx(K[j % len(K)], e)
+        K.extend(extra)
+        ki[0] = 0
     for i in reversed(range(n)):
         if i < (n + 1) // 2:
             cswap(turn(), word[i], word[n - i])
         if i < n // 2:
             cswap(turn(), word[i + 1], word[n - i])
+    for j, e in enumerate(extra):
+        C.cx(K[j % (len(K) - len(extra))], e)
+    del K[len(K) - len(extra):]
+    C.free(extra)
 
     C.x(J)
     for s_, t_ in reversed(tree):
@@ -946,6 +988,8 @@ class TwoBitMod(Mod):
         self.window = (4 * f).bit_length()
         self.merged = 4 * f < 1 << n and self.corner <= 4 * f
         self.run = self._quiet_run() if self.merged else (self.window, self.window)
+        # Set while a tick is recorded whose add takes the backward chain whatever LA_TREE_B says.
+        self.chain_back = False
 
     def _quiet_run(self):
         """Longest run of window bits above bit 0 with no mask set, or an empty one."""
@@ -1163,13 +1207,16 @@ class TwoBitMod(Mod):
             if WIDE_ADD_BSIZES and sum(WIDE_ADD_BSIZES) == self.n - 1:
                 back = list(WIDE_ADD_BSIZES)
             temps = max(sum(r - 1 for r in sizes), sum(r - 1 for r in back))
+            tree_b = 0 if self.chain_back else LA_TREE_B
+            if tree_b:
+                temps = max(temps, tree_temps(self.n, tree_b) - 2 * LA_TOP_TEMPS)
             return add_or_shift_la(C, J, a, word, self.n, ntemps=max(temps, 1), ncopies=WIDE_ADD_COPIES,
-                                   fsizes=sizes, bsizes=back)
+                                   fsizes=sizes, bsizes=back, tree_b=tree_b)
         if LOOKAHEAD_ADD and self.n > 3:
             fsizes = _la_wide(self.n - 1, *LA_F_WIDE) if LA_F_WIDE else None
             bsizes = _la_wide(self.n - 1, *LA_B_WIDE) if LA_B_WIDE else None
             return add_or_shift_la(C, J, a, word, self.n, ntemps=LA_NTEMPS, ncopies=LA_NCOPIES,
-                                   fsizes=fsizes, bsizes=bsizes)
+                                   fsizes=fsizes, bsizes=bsizes, tree_b=0)
         n = self.n
         (cin, D, carry, t) = C.alloc(4)
         extra = C.alloc(3)
