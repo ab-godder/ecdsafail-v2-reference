@@ -7,6 +7,11 @@ name as an output, and leaves every scratch wire it allocates clean.
 
 # PrefixTree.write's mid hook after the carries' clear instead of before it.
 MID_AFTER_CARRIES = True
+# _write_pebbled's mid hook at the root: 0 before the root's carry clear, 1 after it, 2 after it
+# with that clear moved before the root's AND is rebuilt. The clear CCX(t, la, ch) and the tick's
+# mid CCX(t, z, e) each target a wire the other does not read, so they commute; after it, mid no
+# longer holds up the carry clear, and t's last reader before the second chain's fall is mid.
+PEBBLE_MID = 1
 
 
 def target(C, *inputs):
@@ -302,19 +307,26 @@ class PrefixTree:
 
         def up(node, c):
             """Rebuild node's AND on ~new bits and clear the carries at and below it; c is the
-            node's carry in. mid runs at the root, before its carry, t's last reader, clears."""
+            node's carry in. mid runs at the root, where PEBBLE_MID puts it around its carry's clear."""
             if node["kids"] is None:
                 return node["a"]
             lo, hi = node["kids"]
             la = up(lo, c)
             ha = up(hi, node["ch"])
+            root = node is self.root and mid is not None
+            if root and PEBBLE_MID == 2:
+                C.ccx(c, la, node["ch"])
+                C.free([node["ch"]])
             a = target(C, la, ha)
             C.ccx(la, ha, a)
             rebuilt.append((la, ha, a))
-            if node is self.root and mid is not None:
+            if root and PEBBLE_MID == 0:
                 mid(a)
-            C.ccx(c, la, node["ch"])
-            C.free([node["ch"]])
+            if not (root and PEBBLE_MID == 2):
+                C.ccx(c, la, node["ch"])
+                C.free([node["ch"]])
+            if root and PEBBLE_MID:
+                mid(a)
             return a
 
         top = up(self.root, t)

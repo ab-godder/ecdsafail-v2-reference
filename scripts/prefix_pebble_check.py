@@ -22,7 +22,7 @@ MODES = [dict(pebble=None), dict(pebble=-1), dict(pebble=-1, fresh=99), dict(peb
 
 def build(h, block, mode, idle, mutate=None):
     C = Circuit()
-    bits, (t, probe) = C.alloc(h), C.alloc(2)
+    bits, (t, probe, probe_t) = C.alloc(h), C.alloc(3)
     spare = C.alloc(6)            # clean wires on the stack before the tree, as in the tick
     C.free(spare)
     if idle:
@@ -36,17 +36,18 @@ def build(h, block, mode, idle, mutate=None):
     def mid(z):
         seen.append(z)
         C.cx(z, probe)
+        C.ccx(t, z, probe_t)        # as the tick's mid reads t: t must still hold the carry in
 
     P.write(t, mid)
     if idle:
         del C.alloc, C.alloc_after
     assert len(seen) == 1, "mid must run exactly once"
-    return C, bits, t, probe
+    return C, bits, t, probe, probe_t
 
 
 def check(h, block, mode, idle, values, mutate=None):
     """values: list of (bits, t). Returns the number of failing lanes."""
-    C, bits, t, probe = build(h, block, mode, idle, mutate)
+    C, bits, t, probe, probe_t = build(h, block, mode, idle, mutate)
     lanes = len(values)
     init = sim.pack([v for v, _ in values], bits)
     init.update(sim.pack([c for _, c in values], [t]))
@@ -54,13 +55,15 @@ def check(h, block, mode, idle, values, mutate=None):
     got = sim.unpack(state, bits, lanes)
     got_t = sim.unpack(state, [t], lanes)
     got_p = sim.unpack(state, [probe], lanes)
+    got_pt = sim.unpack(state, [probe_t], lanes)
     mask = (1 << h) - 1
     fails = 0
     for lane, (v, c) in enumerate(values):
         new = (v + c) & mask
-        if got[lane] != new or got_t[lane] != c or got_p[lane] != int((~new & mask) == mask):
+        z = int((~new & mask) == mask)
+        if got[lane] != new or got_t[lane] != c or got_p[lane] != z or got_pt[lane] != c & z:
             fails += 1
-    dirty = [w for w in range(C.num_wires) if w not in set(bits) | {t, probe} and state[w]]
+    dirty = [w for w in range(C.num_wires) if w not in set(bits) | {t, probe, probe_t} and state[w]]
     return fails + (lanes if dirty else 0)
 
 
@@ -72,6 +75,15 @@ def layouts(h):
 
 
 def main():
+    ok = True
+    for pm in (0, 1, 2):
+        wide.PEBBLE_MID = pm
+        print(f"PEBBLE_MID={pm}")
+        ok &= run()
+    sys.exit(0 if ok else 1)
+
+
+def run():
     rng = random.Random(1)
     total = cases = 0
     for h in range(1, 14):
@@ -122,7 +134,7 @@ def main():
             tried += 1
             caught += bad > 0
     print(f"mutants: {caught} of {tried} dropped CCX seen")
-    sys.exit(0 if total == 0 and caught == tried else 1)
+    return total == 0 and caught == tried
 
 
 if __name__ == "__main__":
