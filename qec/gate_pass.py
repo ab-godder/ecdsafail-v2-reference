@@ -20,8 +20,13 @@ the same change:
    control1, by majority over that record's executions. It repeats while the
    tick count falls.
 
+3. Prune definition wires. A definition wire that no op or call touches any more
+   (cancelling can leave one) is dropped, with its entry in every call. The board
+   refuses a definition with an untouched wire.
+
 Every rewrite keeps the circuit's function on every input: (1) removes U U = I
-across gates that commute with U, and (2) relabels a symmetric gate.
+across gates that commute with U, (2) relabels a symmetric gate, and (3) drops a
+wire on which the definition is the identity.
 """
 import json
 import sys
@@ -165,6 +170,40 @@ def order_controls(circuit, rounds=4):
     return best
 
 
+def prune_unused_wires(circuit):
+    """Drop definition wires that no op or call in the body touches, and the matching entries of
+    every call to that definition. The board refuses a definition with an untouched wire, and
+    cancelling pairs can leave one. A definition is the identity on such a wire, so dropping it
+    changes nothing. Definitions call only earlier ones, so one pass in order sees every callee
+    already pruned."""
+    defs = circuit.get("definitions", [])
+    keep = []
+    dropped = 0
+
+    def rewrite_calls(ops):
+        for r in ops:
+            if "call" in r:
+                r["wires"] = [r["wires"][k] for k in keep[r["call"]]]
+
+    for d in defs:
+        rewrite_calls(d["operations"])
+        used = sorted({w for r in d["operations"] for w in wires_of(r)})
+        if len(used) < d["arity"]:
+            new = {w: k for k, w in enumerate(used)}
+            for r in d["operations"]:
+                if "call" in r:
+                    r["wires"] = [new[w] for w in r["wires"]]
+                else:
+                    for f in ("control1", "control2", "control", "target", "wire1", "wire2"):
+                        if f in r:
+                            r[f] = new[r[f]]
+            dropped += d["arity"] - len(used)
+            d["arity"] = len(used)
+        keep.append(used)
+    rewrite_calls(circuit["operations"])
+    return dropped
+
+
 def main(src, dst):
     with open(src) as fh:
         doc = json.load(fh)
@@ -178,10 +217,11 @@ def main(src, dst):
     removed += n
     after_cancel = schedule(circuit)
     after = order_controls(circuit)
+    pruned = prune_unused_wires(circuit)
     with open(dst, "w") as fh:
         json.dump(doc, fh, separators=(",", ":"))
     print(json.dumps({"ticks_in": before, "records_cancelled": removed, "ticks_after_cancel": after_cancel,
-                      "ticks_out": after, "wires": circuit["num_wires"]}))
+                      "ticks_out": after, "definition_wires_pruned": pruned, "wires": circuit["num_wires"]}))
 
 
 if __name__ == "__main__":
