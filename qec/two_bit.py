@@ -133,17 +133,27 @@ class Prefix:
             C.cx(t, v)
             C.ccx(a, v, p)
             C.cx(t, v)
+            # x ^= p*below as x ^= p*NOT(below) before the uncompute, which reads below*x and
+            # so is unchanged, then x ^= p once the block's chain is down: the chain holds only
+            # the uncompute's CCX, and no later gate of the block reads x[i] or writes p.
             for i in reversed(range(1, len(x))):
                 below = x[0] if i == 1 else u[i - 2]
-                C.ccx(below, x[i], u[i - 1])
+                C.x(below)
                 C.ccx(p, below, x[i])
+                C.x(below)
+                C.ccx(below, x[i], u[i - 1])
+            for i in reversed(range(1, len(x))):
+                C.cx(p, x[i])
             C.cx(p, x[0])
             for w in reversed(u):
                 C.x(w)
             C.ccx(t, a, p)
             C.free([p])
-        C.ccx(bits[0], bits[1], self.first)
+        C.x(bits[0])
         C.ccx(t, bits[0], bits[1])
+        C.x(bits[0])
+        C.ccx(bits[0], bits[1], self.first)
+        C.cx(t, bits[1])
         C.cx(t, bits[0])
         C.free([self.first])
 

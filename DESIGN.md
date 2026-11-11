@@ -634,3 +634,13 @@ Bit 0 loses its empty X pair: c ^= a; v ^= a; v ^= c is v ^= c; c ^= a, then v ^
 The CCX are the same three a bit. `_kept_difference`, bit 0's carry and the top bit are unchanged.
 This is the identity of PR #21's commits 3 and 6, derived again here for this step, whose in-place branch is the same; `scripts/step_check.py` checks it on every state, within each top mode's domain.
 At G: 32,524,514 -> 26,647,800 ticks.
+
+### Prefix bits incremented before the uncompute
+
+`Prefix.write` used to clear each block bit's AND-chain wire and then add the block's carry p into the bit, alternating, so p and the chain shared one serial path.
+Each bit now takes x ^= p*NOT(below) before its chain wire is cleared, and x ^= p after the block's chain is down.
+The uncompute CCX(below, x, u) reads below*x, and below*(x ^ p*NOT(below)) = below*x, so it is unchanged; the two increments sum to p*below, the old one.
+No later gate of the block reads x[i] or writes p, so the deferred CX can wait; the first two bits take the same form with t.
+This is PR #21's commit 5; our `Prefix.write` is the one it rewrote, and it serves the tick's P and M and the square's carry.
+`scripts/prefix_check.py` runs Prefix and write at every length to 14 bits, with and without release and restore, against `3cb492c` on every input and checks bits + t, with dropped-CCX controls; `square_check.py` passes.
+At G: 26,647,800 -> 24,933,111 ticks.
