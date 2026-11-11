@@ -22,6 +22,7 @@ timed_to() {
 }
 
 $PY -I scripts/model_check.py > receipts/model_check.jsonl
+$PY -I scripts/width_check.py > receipts/width_check.jsonl
 $PY -I scripts/check.py --toy-bits 4 6 7 8 9 10 --toy-per-size 6 --out receipts/toy_exhaustive.json > /dev/null
 $PY -I scripts/mutation_control.py > receipts/mutation_control.json
 $PY -I scripts/component_check.py > receipts/secp256k1_components.json

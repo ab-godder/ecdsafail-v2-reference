@@ -687,3 +687,63 @@ The submission is the emission after three circuit-level passes, `scripts/post_p
 Each keeps the function on every input by its own argument (its docstring); `scripts/check_passes.py` runs them on every toy instance and checks every lane of the expanded result, and `scripts/check_file.py` simulates the passed secp256k1 file at G on the special points and random R.
 At G the passes take 19,118,938 ticks to 18,478,693 (10.6 minutes at 9 jobs); with `--rounds 0` they give 18,482,533.
 A direction-aware rerun of the depth pass's scheduler on every split body, tried before them, gave 18,983,284 on its own but 18,489,306 after them, and doubled the file, so it is not used.
+
+## A width cut at secp256k1
+
+At secp256k1, Euclid ticks 129 to `SECP256K1_CUT_LAST` = 168 run one bit under the generic schedule: 255 at tick 129, then 384 - t, so tick 169 repeats tick 168's width of 216 and the generic schedule resumes.
+Every other prime keeps the generic schedule, and the step shapes, flags and kept carries derive from the schedule as before.
+The argument is generic until W7, a finite search at this q that `scripts/width_check.py` runs.
+
+Write x for the multiplier's nonzero input, (u_t, v_t) for the reference state before tick t, M_t = max(u_t, v_t), Φ(u, v) = max(u, v)² min(u, v), and x = 2^j0 m with m odd.
+bitlen(2q²(q - 1)) = 769, so the generic width is min(256, 385 - t), from Φ_t 4^t ≤ 2q²(q - 1).
+A width w holds the state when M_t < 2^w (E7), so the cut needs M_t² 4^t < 2^768 at ticks 129 to 168.
+
+**W1: groups.** A group is an odd tick and the even ticks that strip the 2^j it leaves on v: ⌈j/2⌉ + 1 ticks from (U, V), V odd, U ≠ V, to (a, B) with a = min(U, V), b = max(U, V) and (b - a)/2 = 2^j B, B odd.
+If B ≤ a then Φ(a, B)/Φ(U, V) = a(b - a)/(b² 2^(j+1)) ≤ 2^-(j+3); if B > a it is (b - a)²/(b² 4^(j+1)) < 4^-(j+1).
+Both are at most 4^-(⌈j/2⌉+1), so the group's slack σ = Φ(U, V)/(Φ(a, B) 4^(⌈j/2⌉+1)) is at least 1.
+The odd tick and each quartering tick cut Φ by at least 4, so only a group's last tick, a halving after odd j, can cut it by less.
+
+**W2: the generic bound.** Before the first odd tick u = q > v, so the strip of 2^j0 quarters Φ per tick and halves it on its last tick when j0 is odd.
+With W1, Φ_t 4^t ≤ 2^[j0 odd] q² x at every t, and q² x < 2^768.
+
+**W3: only states (u, 1) can break the cut.** Suppose M_t² 4^t ≥ 2^768 with v_t ≠ 0 and t ≤ 383.
+Then j0 is odd and min(u_t, v_t) = 1, because min ≥ 2 gives M_t² ≤ Φ_t/2.
+If v_t = 1, then u_t ≥ 3, since M_t = 1 would need t ≥ 384.
+If u_t = 1 < v_t, u became 1 at a swap from some state (U, 1) at t' < t, and from t' + 1 on v at least halves per tick, so U² 4^t' > M_t² 4^t.
+So some t' ≤ t has v_t' = 1, u_t' ≥ 3 and u_t'² 4^t' ≥ 2^768, hence u_t' ≥ 2^(384 - t').
+At a cut tick t ≤ 168 that gives u_t' ≥ 2^216.
+
+**W4: the slack budget.** If m = 1, the only such state is (q, 1) after the strip, where q² 2^(j0+1) ≤ q² 2^256 < 2^768.
+Otherwise the trajectory from (q, m) to (u, 1) is r ≥ 1 groups, and u² 4^t' = 2q² x / (σ_1 ⋯ σ_r).
+So a state that breaks the cut needs σ_1 ⋯ σ_r ≤ 2q² x / 2^768 < 2, with every σ_i ≥ 1.
+
+**W5: the last group.** It ends at (u, 1), so its odd tick leaves |U - V| = 2^(J+1).
+For even J its slack is (u + 2^(J+1))²/(4u 2^J) ≥ 2, so J is odd, D = 2^(J+1) is a power of 4, and the slack is (1 + y)²/(4y) with y = u/D.
+That is below 2 only for 0.17 < 3 - 2√2 < y < 3 + 2√2 < 5.83.
+
+**W6: the backward search.** The last group starts at (u + D, u) or (u, u + D).
+The group before a group that starts at (A, B) starts at (A + 2^(j+1) B, A) if it swaps and at (A, A + 2^(j+1) B) if it does not, for some j ≥ 0, and both run forward to (A, B) in ⌈j/2⌉ + 1 ticks.
+So every start state is D (L_A(y), L_B(y)) with L linear in y with nonnegative integer coefficients, and the slack of the groups found so far is Φ(L_A, L_B)(y)/(4^T y²), T being one more than the ticks of those groups other than the last.
+The search keeps a dyadic interval [y0, y1] and drops a node when Φ(L_A, L_B)(y0)/(4^T y1²) ≥ 2.
+That bounds the slack below on the interval, because Φ(L_A, L_B) grows with y, and earlier groups only multiply it by factors of at least 1 (W1), so W4 rules out every extension.
+The first group starts at (q, m) and swaps, so at each swapping step, and at the last group's swapping start, the search solves a1 u + a0 4^k = q exactly for every k with y in the interval; for odd u and 2m < q it keeps x = 2^j0 m for every odd j0 with x < q.
+Every other start state lies after the first group, so both its coordinates are below q/2: m < q/2 because j0 ≥ 1, and M never grows forward.
+With u ≥ 2^216, D ≥ 2^216 / y1, so the search drops a node when L_A(y0) or L_B(y0) exceeds q y1 / 2^217, and stops trying larger j once a swapping step's L_A(y0) exceeds q y1 / 2^216; backward steps only grow the forms.
+Splitting the interval only refines it, so every path that W4 and W5 allow, with u ≥ 2^216, reaches a kept x.
+
+**W7: the check.** `scripts/width_check.py` holds W6 as `search`, in exact integer arithmetic, and `scripts/width_search.c` is the same search, node for node, in 512-bit fixed-width integers that abort on overflow.
+The script compiles the C search, checks that it matches `search` in node count and kept inputs on nine primes from 1021 to 131071 and on secp256k1 with u ≥ 2^236, sharded and not, and runs it at secp256k1 with u ≥ 2^216 in 256 shards: 53,613,560,142 nodes and three candidate inputs.
+It simulates each candidate: none has M_t² 4^t ≥ 2^768 at any tick, so by W3 no input breaks the cut at ticks 129 to 168.
+It first runs `search` with no floor on u on the nine primes and compares it with brute force over every x, which finds every x the search must keep, except odd powers of two, which W4 handles.
+Pruning at slack 1.5, dropping the non-swapping step, or starting j at 1 makes that comparison miss 16, 59 or 34 inputs on the first six primes.
+It also checks that both searches find twelve planted tight paths, built backwards from (u, 1) with a fixed seed on odd moduli of 21 to 171 bits, where the large-number paths run.
+The secp256k1 run took 2 h 12 min of wall time on 10 cores shared with other work.
+`--python` runs `search` itself at secp256k1 instead; it is about 8 times slower.
+
+At G: 3,185,837 -> 3,185,041 CCX (-796), 22,300,859 -> 22,295,287 T, 35,620,290 -> 35,610,716 ticks, 4,096 wires; one KEEP wire more builds 4,097 wires.
+
+**Limits.** Only ticks 129 to 168 are proved.
+Cutting every tick from 129 to 382 would save 5,068 CCX, but this search cannot reach it: its cost grows about 7.4 times per 4 bits of the floor on u, and the late ticks need floors near 1.
+The generic factor of 2 is tight in general: q = 2^p - 1 and x = q - 1 reach (2^(p-1) - 1, 1) at ratio 2 - o(1).
+For about three quarters of the primes just below 2^16 to 2^24, brute force finds one to a few inputs that break the full cut, so sampling cannot settle it.
+Tick 128 cannot be cut: x = 2^255 reaches (q, 1) there.
