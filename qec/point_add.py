@@ -9,6 +9,25 @@ from .two_bit import TwoBitMod
 from .model import tick_bound, tick_widths
 from . import block0_code, tail_code, tape_block
 from .tape_block import FREE, TICKS
+from .builder import CCX, CX
+
+# K1: the CCX pairs, by op index within one Mod.cmodadd_const(ctrl, value, b) call, that equal CX
+# from ctrl on every canonical b < q and either ctrl, keyed by (q, value mod q). scripts/k1_check.py
+# proves each entry with its own BDD. Only the kernel's add of 3a uses it.
+K1_CUTS = {
+    (0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f,
+     3 * 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+     % 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f): (2929, 5373),
+}
+
+
+def _k1_cut(C, start, q, value, ctrl):
+    """Turn the K1 pair of the cmodadd_const call whose ops began at op start into CX from ctrl."""
+    for pos in K1_CUTS.get((q, value % q), ()):
+        j = 4 * (start + pos)
+        op, x, y, t = C.prims[j:j + 4]
+        assert op == CCX and ctrl in (x, y), (pos, op, x, y)
+        C.prims[j:j + 4] = type(C.prims)("i", (CX, ctrl, t, t))
 
 
 def _fan(C, src, copies):
@@ -969,7 +988,9 @@ class ControlledPointAdd:
         self.M.apply(Xr, Yr, inverse=True)
         (gen,) = C.alloc(1)
         recode(inverse=True)
+        start = len(C.prims) // 4
         mod.cmodadd_const(C, gen, 3 * a, Xr)
+        _k1_cut(C, start, q, 3 * a, gen)
         self._mulsub(gen, Yr, Xr)
         recode()
         C.free([gen])

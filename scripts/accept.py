@@ -187,6 +187,7 @@ class Run:
             "step": [["step_check.py"]],
             "prefix": [["prefix_check.py"]],
             "pass": [["pass_check.py"]],
+            "k1": [["k1_check.py"]],
             "secp-hier": [["check.py", "--secp", "--hier", "--secp-addend", *map(hex, c), "--secp-random", self.secp_points,
                            "--seed", seed, "--out", w / f"secp256k1_hier_{i}.json"] for i, c in enumerate(chunks)],
             **{f"emit:{name}": [["emit.py", *args, "--out", w / "emit" / filename]] for name, (filename, args) in EMITS.items()},
@@ -340,6 +341,10 @@ def i2_step(run):
 
 def i2_prefix(run):
     return _script_row(run, "prefix", "Prefix and write to 14 bits against 3cb492c on every input")
+
+
+def i2_k1(run):
+    return _script_row(run, "k1", "K1 pair proven by BDD on b < q at G, each half, the unbounded pair and another pair refused")
 
 
 def i2_pass(run):
@@ -604,6 +609,7 @@ CHECKS = (
     Check("I2.step", "exactness: rewritten Euclid steps equal the reference steps", i2_step, ("step",)),
     Check("I2.prefix", "exactness: rewritten Prefix.write equals the reference", i2_prefix, ("prefix",)),
     Check("I2.pass", "exactness: depth pass only reorders commuting ops", i2_pass, ("pass",)),
+    Check("I2.k1", "exactness: the K1 cut at G is the same map on the call's domain", i2_k1, ("k1",)),
     Check("I2.secp", "exactness: 256-bit hierarchical upload on exceptional and random points", i2_secp, ("secp-hier", "emit:secp256k1_G.hier")),
     Check("I2.secp-flat", "exactness: 256-bit flat circuit at G", i2_secp_flat, ("secp-flat",), full_only=True),
     Check("I3", "gate set: X, CX, CCX, SWAP only", i3_gate_set, ("toy", "secp-hier", "secp-flat") + EMIT_JOBS),

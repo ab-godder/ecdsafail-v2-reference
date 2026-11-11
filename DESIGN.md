@@ -669,3 +669,13 @@ g1 and g0 are now each copied by a CX tree onto up to `SELECT_COPIES` = 16 clean
 Neither g1 nor g0 is written while the copies exist, so every copy equals its source and the gates are the same; `_kept_difference` does the same for its selects.
 The copies are the same clean held wires the strip's rotation takes, now at least 2 x 16 of them where the pass has that many later cells; the rotation still uses only its L // 2 - 1.
 At G: 19,796,016 -> 19,118,952 ticks (16 copies; 6 give 19,172,168 and 32 the same as 16 before the kept change).
+
+### K1: two kernel CCX at G become CX
+
+In the kernel's `cmodadd_const(gen, 3a, X)`, at secp256k1 and A = G, ops 2,929 and 5,373 of the call are CCX(X[254], gen) onto carries: the selected add's carry clear and the second comparison's carry.
+Together they equal CX from gen on every canonical X, b < q, and either gen, which is the call's contract: X there is x - a mod q after M's inverse, with only the zero remap's low-bit flip, so 1 <= X < q.
+`K1_CUTS` holds the one entry, keyed by (q, value mod q), and `_k1_cut` asserts each op is a CCX on gen before it replaces it, so every other curve and addend, and every definition, emits as before.
+`scripts/k1_check.py` proves it with its own reduced ordered BDD over (gen, X), gen first and X low bit up: every wire's final function agrees with the uncut call wherever b < q.
+It checks the BDD against b + gen*value mod q on random and edge lanes, and four controls each yield a counterexample that the lane simulator confirms: either half alone, the pair without the b < q bound (at b = q), and the other pair of CCX on the same controls, (2,920, 5,378).
+This is PR #21's commit 9 (iwnlcern found the pair); our `qec/arith.py` is byte-identical to its base, so the call's ops are the same, and the proof here is our own.
+At G: 3,185,837 -> 3,185,835 CCX, T 22,300,859 -> 22,300,845, 19,118,938 ticks.
