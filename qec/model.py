@@ -122,10 +122,19 @@ def tick_bound(q):
     return bound - 1 if bound > (3 * n + 1) // 2 and _no_slow_odd_state(q) else bound
 
 
+SECP256K1_Q = 2**256 - 2**32 - 977
+# At secp256k1, ticks 129 to this one run one bit under the generic schedule, which needs
+# max^2 4^t < 2^768 there; DESIGN.md, "A width cut at secp256k1", proves it with
+# scripts/width_check.py.
+SECP256K1_CUT_LAST = 168
+
+
 def tick_widths(q, ticks):
-    """Bits needed before each tick, from max^2 <= 2 * q^2 * (q - 1) / 4^t."""
+    """Bits needed before each tick, from max^2 <= 2 * q^2 * (q - 1) / 4^t, less the
+    secp256k1 cut."""
     n, w = q.bit_length(), 2 * q * q * (q - 1)
-    return [min(n, max(1, ((w >> 2 * t).bit_length() + 1) // 2)) for t in range(ticks)]
+    cut = SECP256K1_CUT_LAST if q == SECP256K1_Q else -1
+    return [min(n, max(1, ((w >> 2 * t).bit_length() + 1) // 2) - (t <= cut)) for t in range(ticks)]
 
 
 def tick_tape(q, x, ticks):

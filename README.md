@@ -41,6 +41,7 @@ $PY -I scripts/mutation_control.py                             # negative contro
 $PY -I scripts/component_check.py                              # 256-bit components on boundary inputs
 $PY -I scripts/square_check.py                                 # square, gen-controlled modadd and reverse at several KEEP values
 $PY -I scripts/keep_check.py                                   # multiplier at every Euclid KEEP budget, odd primes below 600
+$PY -I scripts/width_check.py                                  # exhaustive search behind the secp256k1 width cut; needs cc, hours on all cores
 $PY -I scripts/check.py --secp --secp-random 120               # 256-bit full circuit, sampled
 $PY -I scripts/emit.py --out artifacts/secp256k1_G_circuit.json.gz
 gzip -dc artifacts/secp256k1_G_circuit.json.gz | harness/target/release/qec-harness --circuit - --cases artifacts/secp256k1_cases.json
