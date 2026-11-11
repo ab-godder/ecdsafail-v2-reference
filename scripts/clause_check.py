@@ -23,7 +23,7 @@ def pair(w, next_w):
     mod = Mod(Q)
     m = DialogMultiplier(C, mod)
     U, V, E = C.alloc(mod.n), C.alloc(w), C.alloc(1)
-    a, b = C.alloc(3), C.alloc(3)
+    a, b = C.alloc(m.cell_wires), C.alloc(m.cell_wires)
     inputs = U[:w] + list(V) + E
     C.apply(m._euclid_step(w), [U[:w], V, E, a])
     Vn = V[:next_w]

@@ -10,6 +10,12 @@ top mode), every output wire must match the reference step's, every copy wire mu
 so must every other wire. This covers states the pass never reaches.
 
 Controls: a copy of the current step with one CCX dropped must fail, for each of a few CCX.
+
+Without held offsets (DialogMultiplier.HELD = False) the step is the two-wire-cell step of
+--unheld-ref, the commit before the held offsets, with the depth changes on top. Each such
+variant without swap wires runs on the same states; U, V, E and the cell must match that commit's
+step, and the kept wires, which the held step fills from the same chain, must match --ref's held
+step with the same keep. The same dropped-CCX controls apply.
 """
 import argparse
 import importlib
@@ -29,14 +35,16 @@ from qec.builder import CCX, Circuit
 from qec.point_add import DialogMultiplier
 
 
-def load_ref(commit, tmp, repo=ROOT):
+def load_ref(commit, tmp, repo=ROOT, name="qec_ref"):
     data = subprocess.run(["git", "-C", str(repo), "archive", commit, "qec"], check=True,
                           capture_output=True).stdout
-    tarfile.open(fileobj=io.BytesIO(data)).extractall(tmp, filter="data")
-    (Path(tmp) / "qec").rename(Path(tmp) / "qec_ref")
-    sys.path.insert(0, tmp)
-    return importlib.import_module("qec_ref.point_add"), importlib.import_module("qec_ref.builder"), \
-        importlib.import_module("qec_ref.arith")
+    sub = Path(tmp) / name
+    sub.mkdir()
+    tarfile.open(fileobj=io.BytesIO(data)).extractall(sub, filter="data")
+    (sub / "qec").rename(sub / name)
+    sys.path.insert(0, str(sub))
+    return importlib.import_module(f"{name}.point_add"), importlib.import_module(f"{name}.builder"), \
+        importlib.import_module(f"{name}.arith")
 
 
 def domain(w, top_clear, narrow):
@@ -104,12 +112,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", default="3cb492c")
     ap.add_argument("--max-width", type=int, default=7)
+    ap.add_argument("--unheld-ref", default="a4d4c28")
     ap.add_argument("--repo", default=str(ROOT), help="git checkout that holds --ref")
     a = ap.parse_args()
     with tempfile.TemporaryDirectory() as tmp:
         ref_pa, ref_builder, ref_arith = load_ref(a.ref, tmp, a.repo)
         q = 251
         cur = DialogMultiplier(Circuit(), Mod(q))
+        cur.HELD = True
         ref = ref_pa.DialogMultiplier(ref_builder.Circuit(), ref_arith.Mod(q))
         bad = total = 0
         controls_caught = controls = 0
@@ -142,6 +152,41 @@ def main():
                     o_mut, dirty_mut = [x & dom for x in o_mut], dirty_mut & dom
                     controls += 1
                     if o_mut[:n_old] != o_old or any(o_mut[n_old:]) or dirty_mut:
+                        controls_caught += 1
+        # The two-wire-cell step without held offsets.
+        u_pa, u_builder, u_arith = load_ref(a.unheld_ref, tmp, a.repo, "qec_unheld")
+        unheld = DialogMultiplier(Circuit(), Mod(q))
+        unheld.HELD = False
+        uref = u_pa.DialogMultiplier(u_builder.Circuit(), u_arith.Mod(q))
+        for v in variants(a.max_width):
+            w, top_clear, narrow, last, keep, sw, cp = v
+            if sw:
+                continue
+            new = unheld._euclid_step(w, top_clear, narrow, last, keep, sw, cp)
+            old = uref._euclid_step(w, top_clear, narrow, last)
+            held_ref = ref._euclid_step(w, top_clear, narrow, last, keep, sw)
+            dom = domain(w, top_clear, narrow) if w >= 2 and not last else (1 << (2 * w + 1)) - 1
+            o_new, dirty = outputs(new, [w])
+            o_old, dirty_old = outputs(old, [w])
+            o_held, dirty_held = outputs(held_ref, [w])
+            o_new, o_old, o_held = ([x & dom for x in o] for o in (o_new, o_old, o_held))
+            assert not dirty_old & dom and not dirty_held & dom
+            n_old = len(o_old)
+            want = o_old + o_held[n_old + 1:n_old + 1 + keep]
+            ok = o_new[:len(want)] == want and not any(o_new[len(want):]) and not dirty & dom
+            total += 1
+            if not ok:
+                bad += 1
+                print("MISMATCH unheld", v, flush=True)
+            if cp and not sw and w >= 4:
+                ccx = [k for k in range(len(new.ops) // 4) if new.ops[4 * k] == CCX]
+                for frac in (0.3, 0.6, 0.9):
+                    k = ccx[int(len(ccx) * frac)]
+                    ops = new.ops[:4 * k] + new.ops[4 * k + 4:]
+                    o_mut, dirty_mut = outputs(new, [w], ops)
+                    o_mut = [x & dom for x in o_mut]
+                    controls += 1
+                    if o_mut[:len(want)] != want or any(o_mut[len(want):]) or dirty_mut & dom:
                         controls_caught += 1
         print(f"{total} variants, {bad} mismatched; controls caught {controls_caught} of {controls}")
         sys.exit(1 if bad or controls_caught != controls else 0)

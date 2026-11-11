@@ -748,3 +748,36 @@ Cutting every tick from 129 to 382 would save 5,068 CCX, but this search cannot 
 The generic factor of 2 is tight in general: q = 2^p - 1 and x = q - 1 reach (2^(p-1) - 1, 1) at ratio 2 - o(1).
 For about three quarters of the primes just below 2^16 to 2^24, brute force finds one to a few inputs that break the full cut, so sampling cannot settle it.
 Tick 128 cannot be cut: x = 2^255 reaches (q, 1) there.
+
+## A low-wire build
+
+This branch trades the wire spends above back for a circuit whose peak is the multiplier's own, about 1,260 wires instead of the 4,096-wire cap.
+Three switches, all class attributes, select it; each restores a construction the tree already had or adds a square path that fits under that peak.
+
+- `DialogMultiplier.HELD = False` drops the held offsets (384 wires). The step runs on a two-wire cell as before "Held offsets beside the tape": a subtract keeps its swap on E and moves the old offset onto b, the strip runs on a fresh wire `two` that the step clears with one CCX, and the pass ends with the offset sweep, one controlled swap a cell, which leaves E zero and the same swept tape. `_unheld_step` is that step with the depth changes on it; swap wires need held, so they are off too.
+  The strip and the clear of `two` now go before the subtract's swap cswap(g0, E, b). two implies NOT g0 and that swap is the identity when g0 = 0, so on every state they read the same E and b either way; with the swap first, the strip waited for the selects' g1 copies to clear, which cost about 640,000 ticks at G.
+  The strip's and the selects' control copies go on the pass's unwritten wires, the last of `available`: each is zero until a later step takes it as a cell, and the inverse pass, undoing step i only after every later step, finds it zero again. At G this gives the same ticks as copies on held wires.
+  `scripts/step_check.py` runs each two-wire variant, with and without kept carries and copies, on every state against the step at `a4d4c28`, the commit before held, and its kept wires against the held step at `3cb492c`; the dropped-CCX controls apply to it too.
+- `DialogMultiplier.KEEP = 0` and `RAW_TAPE = False`: no kept Euclid carries, and the tape is block-coded again (see "Seven-tick whole-block capacity codec" and the tape codes), which takes 55 wires off the Bézout peak for 13,768 CCX at G.
+- `ControlledPointAdd.HALVES = True` takes the square through `HalfSquares` below wherever it applies.
+
+### Half squares taken mod q
+
+This is a one-level Karatsuba square with its middle product folded mod q, the construction of Jack Li's PR #11 (`iwnlcern/v2/lean`, 9d13026 and 5034678), reimplemented here from its description.
+Building, applying and unbuilding half squares follows [arXiv:2609.09582, section 5.3.4](https://arxiv.org/abs/2609.09582), and the Karatsuba modular square [arXiv:2609.05625, section VII.2](https://arxiv.org/abs/2609.05625).
+
+For even n write h = n/2, beta = 2^h, Y = L + beta*H and S = L + H, so beta^2 = 2^n = f (mod q) and
+Y^2 = L^2 + beta*(S^2 - L^2) - (beta - f)*H^2 (mod q).
+Each half square Z^2 is SquareFold's rows followed by its conversion (hi = Z - hi, lo = ~lo), which leaves Z' = Z^2 + 2^k - 1 on 2k wires, k = len(Z).
+
+- Group AC forms S on H's wires and a carry wire, builds L' and S' side by side on their own carry-in wires, so the two row sets share no wire, and takes G = S' - L' on S' (G >= 2^h).
+  With G = G0 + beta*G1 it adds T = f*G1 (SquareFold's `_multiple`) and beta*G0 into L': the sum is below 3*2^n, so its two carry bits c1 and c2 are never both 1, and the finish makes it canonical.
+- Group B builds H' = B0 + beta*B1, copies beta*B0 to T, turns H' into ~P with P = H' - B1, and adds f*~P to T; f times T's top bits folds into its low n bits once more, carrying at most once, and the finish makes it canonical. Since beta*H' = beta*B0 + f*B1, this is (beta - f)*H' + f*(2^n - 1) mod q.
+- The finish adds f*(c1 + 2*c2), loaded by CX because the two are exclusive, carries out through a Prefix, adds f under that carry (the sum is then below 3f), and subtracts q when R >= q: k = [R + f >= 2^n] is the low bits' carry AND the high bits' Prefix top, built and replayed backwards around one CCX; k = 1 means the high bits are all ones, so they are cleared by CX and f is added to the low bits.
+
+Each group is a recorded block on (Y, J), J its junk register, which a gen-controlled modadd (SquareFold's, with the Prefix above f's window) takes into X, subtracting AC and adding B, before the block's inverse restores Y and clears J.
+So X becomes X - gen*(Y^2 - K), where K = (beta - f)(beta - 1) + f(2^n - 1) - (beta - 1 + 2^n) collects the half squares' offsets.
+`_kernel` adds 3a to X under gen just before the square and nothing reads X between, so it adds 3a - K there instead, as PR #11's second commit does with its own sign; the K1 cut, keyed on 3a, then does not apply.
+
+`HalfSquares.bounds` checks every inequality the folds need on the integers and the class applies only where they hold: even n >= 8 and f small against 2^h. At secp256k1 the groups keep 683 and 616 junk wires, and the square peaks at 1,241 wires inside the point add, under the multiplier's 1,260.
+`scripts/halves_check.py` runs the path as `mulsub` builds it on every (gen, Y, X) at 8 and 10 bits for every prime where it applies, every Y at 12 to 16 bits, random and edge lanes at 18 to 64 bits and at secp256k1, with Y any n-bit value, and checks X, gen, Y and clean scratch; dropping any one of 19 spread CCX must fail.

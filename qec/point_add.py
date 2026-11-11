@@ -4,7 +4,7 @@ affine (x, y) with infinity = (0, 0)."""
 from .arith import Mod, _maj, add_const, cswap, load_const
 from .builder import Circuit
 from .curve import Curve
-from .square import SquareFold
+from .square import HalfSquares, SquareFold
 from .two_bit import TwoBitMod
 from .model import tick_bound, tick_widths
 from . import block0_code, tail_code, tape_block
@@ -64,11 +64,14 @@ class DialogMultiplier:
     # The tape stays decoded: no block, block-zero or tail code, and so no pebbled ticks. Every
     # code call below is gated on blocks or tail, and each encode was paired with a decode that
     # nothing between reads past, so the passes are the same maps on the same states.
-    RAW_TAPE = True
+    RAW_TAPE = False
     # Carries the forward pass keeps for the inverse pass to clear, each saving one CCX per pass.
-    KEEP = 2018
+    KEEP = 0
     # Give each cell 1 to T - 2 a wire for its swap bit; see DESIGN.md, "Swap bits on the tape".
     SWAP_WIRES = True
+    # Give each cell a third wire for its old offset; see DESIGN.md, "Held offsets beside the tape".
+    # Without it a tick strips on a fresh wire and the pass ends with the offset sweep.
+    HELD = False
 
     def __init__(self, C, mod):
         self.C, self.mod = C, mod
@@ -83,6 +86,16 @@ class DialogMultiplier:
         self._bezout_ticks = {}
         self.narrow = TwoBitMod(q)
         self.block = None
+
+    @property
+    def held_count(self):
+        """Wires the Euclid pass takes for held offsets, one a cell with HELD."""
+        return self.iters if self.HELD else 0
+
+    @property
+    def cell_wires(self):
+        """Wires a Euclid step's cell register has without swap wires."""
+        return 3 if self.HELD else 2
 
     @property
     def pass_tail_width(self):
@@ -423,8 +436,12 @@ class DialogMultiplier:
             def step(U, V, E, cell, *extra):
                 kept = extra[:1] if keep else ()
                 copies = extra[-1] if cp else []
-                g0, b, held = cell[:3]
+                g0, b = cell[:2]
                 offset = E[0]
+                if not self.HELD:
+                    self._unheld_step(U, V, E, cell, top_clear, narrow, last, kept, copies)
+                    return
+                held = cell[2]
                 if last:
                     # The input is (1, 0, 0), (1, 1, 0) or (1, 0, 1). The cell becomes
                     # (V0 ^ E, NOT g0) with held = E, and V and E end zero: all by CX.
@@ -466,9 +483,59 @@ class DialogMultiplier:
                 # A subtract keeps its swap s on E and holds the old offset e beside the cell.
                 cswap(C, g0, [offset], [held])
 
-            sizes = [w, w, 1, 4 if sw else 3] + ([keep] if keep else []) + ([cp] if cp else [])
+            sizes = [w, w, 1, (4 if sw else 3) if self.HELD else 2] + ([keep] if keep else []) + ([cp] if cp else [])
             self._euclid_steps[key] = C.record_shape(step, sizes)
         return self._euclid_steps[key]
+
+    def _unheld_step(self, U, V, E, cell, top_clear, narrow, last, kept, copies):
+        """The Euclid step on a two-wire cell, as before the held offsets: a subtract keeps its swap
+        on E and moves the old offset onto b, and the strip runs on a fresh wire that the step
+        clears. The pass's offset sweep then leaves the same swept tape as the held step."""
+        C, w = self.C, len(V)
+        g0, b = cell
+        offset = E[0]
+        if last:
+            # The input is (1, 0, 0), (1, 1, 0) or (1, 0, 1), and the cell becomes
+            # (V0 ^ E, NOT V0): only V[0], E and the cell change, all by CX.
+            C.cx(V[0], g0)
+            C.cx(offset, g0)
+            C.x(b)
+            C.cx(V[0], b)
+            C.cx(b, V[0])
+            C.x(V[0])
+            C.cx(g0, offset)
+            C.cx(b, offset)
+            C.x(offset)
+            V[:] = V[1:] + V[:1]
+            return
+        top = None
+        if w >= 2 and (top_clear or narrow):
+            top = "both" if top_clear and narrow else "top_clear" if top_clear else "narrow"
+        C.cx(offset, V[0])
+        C.cx(V[0], g0)
+        self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if kept else None, copies)
+        V[:] = V[1:] + V[:1]
+        # A no-subtract tick strips a second bit when V + E is even. two implies NOT g0, and
+        # the subtract's swap below is the identity when g0 = 0, so the strip and the clear of
+        # two read the same E and b before that swap as after it, and go first.
+        (two,) = C.alloc(1)
+        C.cx(offset, V[0])
+        C.x(g0)
+        C.x(V[0])
+        C.ccx(g0, V[0], two)
+        C.x(V[0])
+        C.x(g0)
+        C.cx(offset, V[0])
+        C.cx(two, b)
+        C.ccx(two, offset, V[0])
+        _rotate_left(C, two, V[:self._strip_len(w, top_clear)],
+                     copies[:self._strip_copies(w, top_clear)])
+        C.x(g0)
+        C.ccx(g0, b, two)
+        C.x(g0)
+        C.free([two])
+        # A subtract keeps its swap on E and moves the old offset to the cell.
+        cswap(C, g0, [offset], [b])
 
     def _euclid_tick0(self):
         """First Euclid step on U=q, E=0, using unwritten tape for carries."""
@@ -510,7 +577,9 @@ class DialogMultiplier:
                 for i in range(n - 2):
                     cswap(C, b, [V[i]], [V[i + 1]])
                 # The cell's swept bit s ^ two, with s = g0 since U = q > v; e = 0 needs no held.
-                C.cx(g0, b)
+                # Without held the offset sweep does this at cell 0.
+                if self.HELD:
+                    C.cx(g0, b)
 
             self._euclid_tick0_block = C.record_shape(step, [n, n, 1, 2, k])
         return self._euclid_tick0_block
@@ -525,7 +594,8 @@ class DialogMultiplier:
         # swr, if given, starts zero and ends with cells 1 to T - 2's swap bits s = g0 AND b.
         n = self.mod.n
         assert swr is None or len(swr) == self.iters - 2
-        assert len(held) == self.iters
+        assert len(held) == self.held_count
+        assert self.HELD or swr is None
         plan = self.kept_plan() if kept is not None else [0] * self.iters
         assert kept is None or len(kept) == sum(plan)
         at = 0
@@ -548,6 +618,7 @@ class DialogMultiplier:
                 last = i == self.iters - 1
                 narrow = not last and self.widths[i + 1] == w - 1
                 cell = cell + held[i:i + 1]
+                assert len(cell) == self.cell_wires
                 on_sw = swr is not None and 1 <= i <= self.iters - 2
                 if on_sw:
                     cell = cell + [swr[i - 1]]
@@ -557,11 +628,13 @@ class DialogMultiplier:
                     regs.append(kept[at:at + plan[i]])
                     at += plan[i]
                 # The strip's control copies go on later cells' held wires, which are zero until
-                # their own steps.
+                # their own steps. Without held they go on the pass's unwritten wires, the last of
+                # available, which are zero until later steps take them.
+                spare = self.iters - 1 - i if self.HELD else len(available)
                 cp = 0 if last else min(max(self._strip_copies(w, top_clear), 2 * self.SELECT_COPIES),
-                                        self.iters - 1 - i)
+                                        spare)
                 if cp:
-                    regs.append(held[self.iters - cp:])
+                    regs.append(held[self.iters - cp:] if self.HELD else available[len(available) - cp:])
                 self.C.apply(self._euclid_step(w, top_clear, narrow, last, plan[i], on_sw, cp), regs)
             G.extend(cell[:2])
             next_width = self.widths[i + 1] if i + 1 < self.iters else self.pass_tail_width
@@ -584,7 +657,7 @@ class DialogMultiplier:
             if k % TICKS == 0 and k // TICKS < self.blocks:
                 clean.extend(self._encode(G, k // TICKS, swept))
 
-        self._b1_sweep(G, swept and sweep, done)
+        self._b1_sweep(G, swept and sweep, done, None if self.HELD else E)
         self.C.free(E)
         # Block 0's free wires take their places among the zero words raw, and block 0 is coded
         # last, unless block0_raw leaves that to the caller.
@@ -599,9 +672,11 @@ class DialogMultiplier:
         if raw and not block0_raw:
             self._code_block0(U, pool)
 
-    def _b1_sweep(self, G, b1=True, done=None):
+    def _b1_sweep(self, G, b1=True, done=None, E=None):
         """Rotate each no-subtract run of the tape G so B1 is last in Bezout order, cell T - 1 down
-        to 0, calling done(i) once cell i's steps are over; with b1 False only done runs."""
+        to 0, calling done(i) once cell i's steps are over; with b1 False only done runs.
+        With E, the offset wire of a pass without held offsets, each cell first takes the offset
+        sweep, which moves each subtract cell's swap from E onto b and leaves E zero."""
         T = self.iters
         both = None
 
@@ -621,6 +696,19 @@ class DialogMultiplier:
             (both,) = self.C.alloc(1)
             mark(T - 2 if late else T - 1)
         for i in range(T - 1, -1, -1):
+            if E is not None:
+                # At cell T - 1, g0 = 0 implies E ^ b = 1; at cell 0, tick 0 on U = q > x, a
+                # subtract always swaps, so there g0 = 1 implies E ^ b = 1.
+                g0, b = G[2 * i], G[2 * i + 1]
+                if i == 0 or i == T - 1:
+                    self.C.cx(b, E[0])
+                    self.C.cx(g0, b)
+                    if i:
+                        self.C.cx(E[0], b)
+                        self.C.x(b)
+                    self.C.cx(b, E[0])
+                else:
+                    cswap(self.C, g0, E, [b])
             if b1 and i + 1 < T and not (late and i == T - 2):
                 k = i + 1
                 self._b1_step(G, k, both)
@@ -827,11 +915,11 @@ class DialogMultiplier:
         # On the merged path block 0 stays decoded from Bezout's end into the inverse pass, so
         # the pass is recorded without its last encode, which runs here instead.
         raw0 = self.swept and self.blocks > 0
-        held = C.alloc(T)
+        held = C.alloc(self.held_count)
         inline = self.inline_sweep
         # Each cell's swap bit, copied by CX in the Euclid step, saves the Bezout tick its own
         # CCX for it and the CCX that cleared the B1 mark made from it, and halves the unsweep.
-        swr = C.alloc(T - 2) if self.SWAP_WIRES and inline and not self.blocks and T >= 3 else None
+        swr = C.alloc(T - 2) if self.SWAP_WIRES and self.HELD and inline and not self.blocks and T >= 3 else None
         kept = C.alloc(sum(self.kept_plan()))
         regs = [U, pool, held, kept] + ([swr] if swr is not None else [])
         E = C.run(lambda U, pool, held, kept, *sw: self._euclid_pass(
@@ -907,6 +995,10 @@ def encode(P, n):
 
 
 class ControlledPointAdd:
+    # Square with HalfSquares where it applies: two groups of half squares, each built, taken
+    # into X and unbuilt, in place of SquareFold's whole product and its Karatsuba junk.
+    HALVES = True
+
     def __init__(self, curve: Curve, A):
         assert A is not None and curve.on_curve(A)
         self.curve, self.A = curve, A
@@ -920,9 +1012,22 @@ class ControlledPointAdd:
         assert len(set(enc)) == 4, "addend order must exceed 3"
         self._square_blk = None
 
+    def _halves(self):
+        return HalfSquares(self.mod) if self.HALVES and HalfSquares.applies(self.mod.q) else None
+
+    def _square_offset(self):
+        """K, where _mulsub leaves X - gen*(Y^2 - K): _kernel's constant add just before it
+        takes gen*K off."""
+        hs = self._halves()
+        return hs.K if hs is not None else 0
+
     def _mulsub(self, gen, Yr, Xr):
-        """X = X - gen * Y^2 mod q, Y untouched."""
+        """X = X - gen * (Y^2 - _square_offset()) mod q, Y untouched."""
         C, mod, n = self.C, self.mod, self.n
+        hs = self._halves()
+        if hs is not None:
+            hs.mulsub(C, gen, Yr, Xr)
+            return
         if SquareFold.applies(mod.q):
             self._square_mulsub(gen, Yr, Xr)
             return
@@ -989,8 +1094,10 @@ class ControlledPointAdd:
         (gen,) = C.alloc(1)
         recode(inverse=True)
         start = len(C.prims) // 4
-        mod.cmodadd_const(C, gen, 3 * a, Xr)
-        _k1_cut(C, start, q, 3 * a, gen)
+        # _mulsub leaves gen*_square_offset() too many on X; this add takes it off first, since
+        # nothing between them reads X.
+        mod.cmodadd_const(C, gen, 3 * a - self._square_offset(), Xr)
+        _k1_cut(C, start, q, 3 * a - self._square_offset(), gen)
         self._mulsub(gen, Yr, Xr)
         recode()
         C.free([gen])

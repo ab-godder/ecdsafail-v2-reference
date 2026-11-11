@@ -74,10 +74,12 @@ Python is stdlib only. The harness is a Rust crate whose dependencies are path r
 All numbers are measured unless marked as estimates.
 
 **This branch.**
-At G the circuit is 4,096 wires, 3,185,039 CCX and 22,295,273 T.
-The hierarchical emission, with the depth pass, has 12,622,787 ops and a scheduled depth of 19,116,010 ticks; after the post-emit passes, the submitted circuit has 12,314,893 ops and 18,475,761 ticks, giving qubit-time 75,676,717,056. `DESIGN.md`, "Depth changes", lists the changes from 35,620,290, and "A width cut at secp256k1" the CCX cut at ticks 129 to 168.
-Wires × T is 91,321,438,208, which is 21.70% below the reference's 2,311 × 50,465,933.
-The hierarchical JSON for G is 37,512,568 bytes, under the 100 MiB upload cap, with an expanded ops charge of 13,719,471 (13,411,577 after the post-emit passes); the flat circuit is still over the 10,000,000 operation cap.
+This is the low-wire build: `DESIGN.md`, "A low-wire build", gives its switches and the half-square path that keeps the square under the multiplier's peak.
+At G the circuit is 1,260 wires, 3,250,112 CCX and 22,750,784 T.
+The hierarchical emission, with the depth pass, has 12,861,398 ops and a scheduled depth of 19,326,543 ticks; after the post-emit passes, the submitted circuit has 12,551,154 ops and 18,673,926 ticks, giving qubit-time 23,529,146,760.
+That is below PR #11's 22,948,282 T and 24,747,912,448 qubit-time (1,246 wires x 19,861,888 ticks) on both counts.
+The hierarchical JSON for G is 39,705,906 bytes, under the 100 MiB upload cap, with an expanded ops charge of 13,961,229 before the post-emit passes.
+The 4,096-wire build this branch started from (3,185,039 CCX, 18,475,761 ticks after the passes) is this source with `DialogMultiplier.HELD = True`, `KEEP = 2018`, `RAW_TAPE = True` and `ControlledPointAdd.HALVES = False`, which rebuilds it gate for gate (19,116,010 ticks before the passes).
 Two named limits apply.
 `I2.model`'s zero-caller row is narrowed from the reference's gate.
 The standalone multiplier is restricted to x in [1, q), and nonzero x at its entries rests on the kernel's flag code and the non-full build refusal.
