@@ -989,6 +989,18 @@ class TwoBitMod(Mod):
         # On a held lane k1 and k2 change wires, so the compare's target is k's top bit there.
         if p is not None:
             cswap(C, p, [k1], [k2])
+
+        # S = R + k*f mod 4 names k's bit 1, which sits on k2 on a held lane. c1 holds its k0*R0
+        # term. The compare reads low[1] and a[1] last and restores them, so c1 takes them before
+        # it: the tick's tail then waits only on the compare's top, through z, and not its end.
+        def bit_one(m):
+            C.cx(low[1], m)
+            C.cx(a[1], m)
+            if f >> 1 & 1:
+                C.cx(k0, m)
+
+        if p is not None:
+            bit_one(c1)
         def mark_even(z):
             C.cx(k2, g0)
             C.x(k0)
@@ -1021,16 +1033,7 @@ class TwoBitMod(Mod):
         mark_even(z)
         C.free([z])
         if p is not None:
-            # S = R + k*f mod 4 names k's bit 1, which now sits on k2. c1 holds its k0*R0 term.
-            def bit_one(m):
-                C.cx(low[1], m)
-                C.cx(a[1], m)
-                if f >> 1 & 1:
-                    C.cx(k0, m)
-
-            bit_one(c1)
             C.ccx(p, c1, k2)
-            bit_one(c1)
         if tape and p is not None:
             # p = 1 ^ g0 ^ b ^ s, formed by the tick before from this same cell's g0 and swept b.
             C.x(p)
@@ -1039,6 +1042,8 @@ class TwoBitMod(Mod):
         else:
             self._drop_after_b1(C, prev, p)
         C.ccx(l0, k0, c1)
+        if p is not None:
+            bit_one(c1)
         C.free([c1])
         C.cx(sw, b)
         C.ccx(b, low[1], k1)
