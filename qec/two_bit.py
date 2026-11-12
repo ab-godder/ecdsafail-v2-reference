@@ -86,7 +86,7 @@ class Prefix:
 
     # A block's carry is copied onto up to COPIES freed tops, one per COPY_EVERY of its bits past
     # the first, so its increments fan out.
-    COPIES, COPY_EVERY = 3, 8
+    COPIES, COPY_EVERY = 3, 3
 
     def write(self, t):
         """bits += t, every wire restored or cleared."""
@@ -118,17 +118,23 @@ class Prefix:
             ctl = [p] + pool[:-1][:min(self.COPIES, (len(x) - 1) // self.COPY_EVERY)]
             for c in ctl[1:]:
                 C.cx(p, c)
+            # p takes the top positions, the copies the rest down to bit 1, top down.
+            per = -(-(len(x) - 1) // len(ctl))
+
+            def own(i):
+                return ctl[(len(x) - 1 - i) // per]
+
             # x ^= p*below as x ^= p*NOT(below) before the uncompute, which reads below*x and
             # so is unchanged, then x ^= p once the block's chain is down: the chain holds only
             # the uncompute's CCX, and no later gate of the block reads x[i] or writes p.
             for i in reversed(range(1, len(x))):
                 below = x[0] if i == 1 else u[i - 2]
                 C.x(below)
-                C.ccx(ctl[i % len(ctl)], below, x[i])
+                C.ccx(own(i), below, x[i])
                 C.x(below)
                 C.ccx(below, x[i], u[i - 1])
             for i in reversed(range(1, len(x))):
-                C.cx(ctl[i % len(ctl)], x[i])
+                C.cx(own(i), x[i])
             C.cx(p, x[0])
             for c in ctl[1:]:
                 C.cx(p, c)
