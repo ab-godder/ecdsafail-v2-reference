@@ -858,7 +858,12 @@ class TwoBitMod(Mod):
         if p is not None:
             for x in word:
                 C.cx(p, x)
-        (l0,) = C.alloc(1)
+        # l0 = g0*R0 is 0 on a B1, so it shares the second handed-over wire, which holds a bit only
+        # on a B1. Its readers see g0*R0, or a B1 lane, where k = 0 and one = 0.
+        if ahead is None:
+            (l0,) = C.alloc(1)
+        else:
+            l0 = ahead[1]
         C.ccx(g0, a[0], l0)
         low = [l0] + word[:n - 1]
         L, H = low[:w], low[w:]
@@ -910,32 +915,50 @@ class TwoBitMod(Mod):
         else:
             C.cx(chain[w], e)
         self._chain_down(C, L, selectors, masks, M, {}, chain, drop, False, keep=1)
-        if nxt is None:
-            C.x(one)
-        else:
-            C.cx(b, one)
-            C.cx(g0, one)
-        C.cx(sw, b)
+        nb1 = one
         C.ccx(three, e, k2)
         # three = K0*K1 becomes k0*k1 = K0*K1 ^ e*K1 for k = K + e, so it reads k1 before k1 changes.
         C.ccx(e, k1, three)
-        C.free([one])
         one = three
         C.ccx(k0, e, k1)
         C.cx(e, k0)
-        # c1 = l0*(one ^ K0) becomes the second chain's l0*k0 = l0*(K0 ^ e). l0 = 1 only off B1,
-        # where one = 1, so the change is l0*(1 ^ e).
-        C.cx(l0, c1)
-        C.ccx(l0, e, c1)
+        # c1 = l0*(nb1 ^ K0) becomes the second chain's l0*k0 = l0*(K0 ^ e): c1 ^= l0*(nb1 ^ e).
+        C.cx(e, nb1)
+        C.ccx(l0, nb1, c1)
+        C.cx(e, nb1)
+        if nxt is None:
+            C.x(nb1)
+        else:
+            C.cx(b, nb1)
+            C.cx(g0, nb1)
+        C.cx(sw, b)
+        late = [nb1]
+        if spare:
+            # e = P.top*e, so it waits for its clear on a borrowed H wire, clean when P.top = 1.
+            u = take()
+            C.cx(e, u)
+            C.ccx(P.top, u, e)
+            late.append(e)
+            e = u
+
+        def carry():
+            # The wires just cleared go to the chain's second and third carries, not its first,
+            # whose CCX would wait for their last gates.
+            c = alloc()
+            if late:
+                C.free([late.pop()])
+            return c
+
         selectors, masks = [one, k0, k1, k2], [self.corner, f, 2 * f, 4 * f]
         perch = self._perches(selectors, masks)
-        # Every low carry stays on its own wire until its fall, and e stays on its own wire.
-        chain = self._chain_up(C, L, selectors, masks, M, perch, alloc, bottom=c1)
+        # Every low carry stays on its own wire until its fall.
+        chain = self._chain_up(C, L, selectors, masks, M, perch, carry, bottom=c1)
+        C.free(late)
         if H:
             C.ccx(P.top, chain[w], e)
         else:
             C.cx(chain[w], e)
-        C.free([e])
+        drop(e)
         P.write(chain[w])
         # The bottom carry c1 = l0*k0 stays: on a held lane l0 = R0, so it is the k0*R0 that bit one reads.
         self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True, keep=1)
@@ -999,7 +1022,12 @@ class TwoBitMod(Mod):
         C.cx(l0, k0)
         C.cx(sw, b)
         C.ccx(g0, a[0], l0)
-        C.free([l0, spill, high])
+        if ahead is None:
+            C.free([l0])
+        else:
+            # l0 holds only the B1's handed-over bit again; take that back out of k0.
+            C.cx(l0, k0)
+        C.free([spill, high])
         if hand is not None:
             hand[:] = [] if nxt is None else ahead
         s[:] = s[-1:] + s[:-1]
