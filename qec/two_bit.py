@@ -20,42 +20,7 @@ one holds H's two top bits between the ticks, and is 0 elsewhere. The only other
 [this cell is B1], which the tick makes from its own sw with an X and two CX and the next tick
 reads as held, in place of computing it with a CCX.
 """
-from functools import lru_cache
-import heapq
-
 from .arith import Mod, _maj, _selected_carry, cswap, gt_into
-
-
-@lru_cache(maxsize=None)
-def _cap4_schedule(n, top):
-    """The handover's reversible low-carry pebble search, per chain length."""
-    if not 1 <= n <= 15:
-        return None
-    dist, back, heap, best = {0: 0}, {0: None}, [(0, 0)], None
-    while heap:
-        cost, state = heapq.heappop(heap)
-        if cost != dist[state]:
-            continue
-        live = state.bit_count()
-        if state >> (n - 1) & 1 and live + top <= 4:
-            candidate = (cost - n + n - live, state)
-            if best is None or candidate < best:
-                best = candidate
-        for i in range(1, n + 1):
-            if i == 1 or state >> (i - 2) & 1:
-                nxt = state ^ (1 << (i - 1))
-                if nxt.bit_count() <= 4 and cost + 1 < dist.get(nxt, 1 << 30):
-                    dist[nxt], back[nxt] = cost + 1, (state, i)
-                    heapq.heappush(heap, (cost + 1, nxt))
-    if best is None:
-        return None
-    state = best[1]
-    kept = frozenset(i + 1 for i in range(n) if state >> i & 1)
-    moves = []
-    while back[state] is not None:
-        state, i = back[state]
-        moves.append(i)
-    return tuple(reversed(moves)), kept
 
 
 class Prefix:
@@ -175,22 +140,49 @@ class TwoBitMod(Mod):
         self.corner = f ^ 2 * f ^ 3 * f
         self.window = (4 * f).bit_length()
         self.merged = 4 * f < 1 << n and self.corner <= 4 * f
-        self.run = self._quiet_run() if self.merged else (self.window, self.window)
+        self.runs = self._runs() if self.merged else []
 
-    def _quiet_run(self):
-        """Longest run of window bits above bit 0 with no mask set, or an empty one."""
+    def _runs(self):
+        """Runs of two or more window bits above bit 0 on which every reduction adds the same bit:
+        0 on a quiet run, 1 for every k >= 1 on a ones run (Joel's ca60e8a). As (start, end, ones),
+        low to high."""
         f, w = self.f, self.window
         used = f | 2 * f | 3 * f | 4 * f | self.corner
-        best, start = (w, w), None
-        for i in range(1, w + 1):
-            quiet = i < w and not used >> i & 1
-            if quiet and start is None:
+        ones = f & 2 * f & 3 * f & 4 * f
+        kind = [None] + ['ones' if ones >> i & 1 else None if used >> i & 1 else 'quiet'
+                         for i in range(1, w)]
+        runs, start = [], 1
+        for i in range(2, w + 1):
+            if i == w or kind[i] != kind[start]:
+                if kind[start] and i - start >= 2:
+                    runs.append((start, i, kind[start] == 'ones'))
                 start = i
-            if not quiet and start is not None:
-                if i - start >= 2 and i - start > best[1] - best[0]:
-                    best = (start, i)
-                start = None
-        return best
+        return runs
+
+    def _run_prefixes(self, C, L):
+        """One Prefix per run. A ones run takes 2^h - 1 + c = 2^h - (1 - c), a decrement by 1 - c,
+        which is an increment of the complement, so its bits sit under an X from here to the write."""
+        prefixes = []
+        for a, b, ones in self.runs:
+            if ones:
+                for x in L[a:b]:
+                    C.x(x)
+            prefixes.append(Prefix(C, L[a:b]))
+        return prefixes
+
+    def _bridge(self, C, selectors, masks, a, carry, top, out):
+        """out ^= s ^ (carry ^ s)*top, the carry out of the run at a, whose addend bits all equal s.
+
+        s is the XOR of the selectors set at a. On a quiet run s = 0. On a ones run the complement
+        is incremented by 1 - carry, and the run carries out unless that increment wraps. When s = 0
+        on a ones run the whole addend is 0, so carry = 0 and top is not read."""
+        active = [sel for sel, mask in zip(selectors, masks) if mask >> a & 1]
+        for sel in active:
+            C.cx(sel, carry)
+        C.ccx(carry, top, out)
+        for sel in active:
+            C.cx(sel, carry)
+            C.cx(sel, out)
 
     def step(self, C, g, R, S):
         if self.merged:
@@ -230,24 +222,18 @@ class TwoBitMod(Mod):
 
     def _perches(self, selectors, masks):
         """Bits whose carry out can sit on their selector, as {bit: selector}."""
-        a, b = self.run
         perch, read = {}, set()
         for i in reversed(range(1, self.window)):
-            if a <= i < b:
-                continue
             on = [s for s, mask in zip(selectors, masks) if mask >> i & 1]
             free = [s for s in on if s not in read]
-            if free:
+            if free and not any(a <= i < b for a, b, _ in self.runs):
                 perch[i] = free[0], [s for s in on if s != free[0]]
             read.update(on)
         return perch
 
-    def _chain_up(self, C, L, selectors, masks, M, perch, take, kept=None, moves=None,
-                  bottom=None):
-        """kept, when given, names the low carries that stay. Each other one is cleared once the
-        next kept carry is built, so only kept carries are live above it; _chain_down rebuilds them.
-        bottom, when given, is a wire that already holds the bottom carry chain[1]."""
-        a, b, w = *self.run, self.window
+    def _chain_up(self, C, L, selectors, masks, M, perch, take, bottom=None):
+        """M holds one Prefix per run. bottom, when given, is a wire that already holds the bottom
+        carry chain[1]."""
         chain = {0: None}
 
         def rise(i):
@@ -263,39 +249,22 @@ class TwoBitMod(Mod):
                 chain[i + 1] = take()
                 _selected_carry(C, L[i], selectors, masks, i, chain[i], chain[i + 1])
 
-        start = 0
+        i = 0
         if bottom is not None:
-            assert kept is None and moves is None and a >= 1 and 0 not in perch
-            chain[1], start = bottom, 1
-        if moves is not None:
-            for j in moves:
-                if j in chain:
-                    _selected_carry(C, L[j - 1], selectors, masks,
-                                    j - 1, chain[j - 1], chain[j])
-                    C.free([chain.pop(j)])
-                else:
-                    rise(j - 1)
-            start = a - 1
-        last = start
-        for i in range(start, a):
-            rise(i)
-            if kept is not None and (i + 1 in kept or i + 1 == a):
-                for j in range(i, last, -1):
-                    if j not in kept:
-                        _selected_carry(C, L[j - 1], selectors, masks,
-                                    j - 1, chain[j - 1], chain[j])
-                        C.free([chain.pop(j)])
-                last = i + 1
-        if b > a:
+            assert 0 not in perch
+            chain[1], i = bottom, 1
+        for (a, b, _), Mr in zip(self.runs, M):
+            for j in range(i, a):
+                rise(j)
             chain[b] = take()
-            C.ccx(chain[a], M.top, chain[b])
-        for i in range(b, w):
-            rise(i)
+            self._bridge(C, selectors, masks, a, chain[a], Mr.top, chain[b])
+            i = b
+        for j in range(i, self.window):
+            rise(j)
         return chain
 
-    def _chain_down(self, C, L, selectors, masks, M, perch, chain, drop, write, take=None, keep=0):
+    def _chain_down(self, C, L, selectors, masks, M, perch, chain, drop, write, keep=0):
         """keep = 1 leaves the bottom carry chain[1] built, for the caller to clear."""
-        a, b, w = *self.run, self.window
 
         def fall(i):
             if i in perch:
@@ -314,58 +283,28 @@ class TwoBitMod(Mod):
                         C.cx(selector, L[i])
                 C.cx(chain[i], L[i])
 
-        for i in reversed(range(b, w)):
-            fall(i)
-        if b > a:
-            C.ccx(chain[a], M.top, chain[b])
+        i = self.window
+        for (a, b, ones), Mr in reversed(list(zip(self.runs, M))):
+            for j in reversed(range(b, i)):
+                fall(j)
+            self._bridge(C, selectors, masks, a, chain[a], Mr.top, chain[b])
             drop(chain[b])
             if write:
-                M.restore()
-                M.write(chain[a])
-        for i in reversed(range(keep, a)):
-            if i not in chain:
-                start = max(j for j in chain if j < i)
-                for j in range(start + 1, i + 1):
-                    chain[j] = take()
-                    _selected_carry(C, L[j - 1], selectors, masks,
-                                    j - 1, chain[j - 1], chain[j])
-            fall(i)
-
-    def _pebble_schedule(self, perch):
-        a, b = self.run
-        # The checked construction pebbles the unperched prefix, then uses
-        # the selector at a-1 as carry a. Other shapes retain today's schedule.
-        if sorted(i for i in perch if i < a) != [a - 1]:
-            return None
-        return _cap4_schedule(a - 1, int(b > a))
-
-    def _kept_carries(self, perch):
-        """The low carries 1..a that the second chain keeps, chosen so that the most clean low wires
-        live at once, while building a segment or at the chain's top, is least; then fewest dropped.
-
-        A carry out of a perched bit is on a selector, so it costs no wire and is always kept, and so
-        is the carry into a perched bit, which the perch changes until its fall. Each dropped carry
-        costs 2 CCX: one to clear it going up, one to rebuild it going down.
-        """
-        a, b = self.run
-        top = int(b > a)
-        fixed = {i + 1 for i in perch if i < a} | {i for i in perch if 0 < i < a} | {a}
-        free = [i for i in range(1, a) if i not in fixed]
-        if len(free) > 16:
-            return set(range(a + 1))
-        on_wire = lambda i: i - 1 not in perch
-        best = None
-        for mask in range(1 << len(free)):
-            kept = fixed | {i for k, i in enumerate(free) if mask >> k & 1}
-            live = peak = last = 0
-            for i in sorted(kept):
-                peak = max(peak, live + sum(on_wire(j) for j in range(last + 1, i + 1)))
-                live += on_wire(i)
-                last = i
-            key = (max(peak, live + top), a - len(kept))
-            if best is None or key < best[0]:
-                best = key, kept
-        return best[1]
+                # The run's sum is its bits + s*(2^h - 1) + carry, which is the Prefix's write of
+                # carry, or for a ones run under s, of carry ^ s into the complement.
+                active = [sel for sel, mask in zip(selectors, masks) if mask >> a & 1]
+                for sel in active:
+                    C.cx(sel, chain[a])
+                Mr.restore()
+                Mr.write(chain[a])
+                for sel in active:
+                    C.cx(sel, chain[a])
+                if ones:
+                    for x in L[a:b]:
+                        C.x(x)
+            i = a
+        for j in reversed(range(keep, i)):
+            fall(j)
 
     def _after_b1(self, C, prev):
         """Fresh wire = [the previous cell is B1], or None on a pass's first tick."""
@@ -703,8 +642,7 @@ class TwoBitMod(Mod):
             C.cx(g0, one)
             C.cx(b, one)
             # On a B1, the add moved H's bits n and n + 1 to ahead, the next tick's word top.
-        ra, rb = self.run
-        P, M = Prefix(C, H, cap=self.P_CAP), Prefix(C, L[ra:rb])
+        P, M = Prefix(C, H, cap=self.P_CAP), self._run_prefixes(C, L)
 
         # With at most one H bit, P reads a data wire or nothing, and there is nothing to borrow.
         spare = H[:] if len(H) > 1 else []
@@ -770,7 +708,7 @@ class TwoBitMod(Mod):
         C.free([e])
         P.write(chain[w])
         # The bottom carry c1 = l0*k0 stays: on a held lane l0 = R0, so it is the k0*R0 that bit one reads.
-        self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True, alloc, keep=1)
+        self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True, keep=1)
         c1 = chain[1]
 
         # On a held lane k1 and k2 change wires, so the compare's target is k's top bit there.
