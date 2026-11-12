@@ -7,7 +7,8 @@ sampled y above, and every output and scratch wire must be exact (runs_check's l
 The primes cover e's wait on a borrowed H wire (len(H) >= 2) and the handed-over bit on l0.
 
 Controls, which must fail at some prime: e left on its wire when it moves to H, the B1 bit left
-in k0 at the tick's end, and c1's update without its CCX.
+in k0 at the tick's end, c1's update without its CCX, and a lean tick (two tape blocks
+decoded around it) that does not rebuild sw.
 """
 import sys
 from contextlib import contextmanager
@@ -26,11 +27,13 @@ SOURCE = ROOT / "qec" / "two_bit.py"
 
 
 @contextmanager
-def dropping(kind, snippet, after=None):
-    """Drop every gate of this kind emitted from the line of two_bit.py that reads snippet, the
-    first such line below the one that reads after when after is given."""
+def dropping(kind, snippet, *after):
+    """Drop every gate of this kind emitted from the line of two_bit.py that reads snippet: the
+    first such line below the lines that read each of after, found in turn."""
     lines = [line.strip() for line in SOURCE.read_text().splitlines()]
-    start = lines.index(after) + 1 if after else 0
+    start = 0
+    for anchor in after:
+        start = lines.index(anchor, start) + 1
     target = lines.index(snippet, start) + 1
     real = getattr(Circuit, kind)
 
@@ -66,6 +69,7 @@ def main():
         ("e kept on its wire", ("ccx", "C.ccx(P.top, u, e)")),
         ("B1 bit left in k0", ("cx", "C.cx(l0, k0)", "# l0 holds only the B1's handed-over bit again; take that back out of k0.")),
         ("c1 update without its CCX", ("ccx", "C.ccx(l0, nb1, c1)")),
+        ("lean tick without sw's rebuild", ("ccx", "C.ccx(g0, b, sw)", "late.append(sw)", "(sw,) = C.alloc(1)")),
     ]
     caught = 0
     for name, args in controls:

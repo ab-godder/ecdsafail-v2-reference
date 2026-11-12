@@ -696,6 +696,13 @@ class TwoBitMod(Mod):
         one = three
         C.ccx(k0, e, k1)
         C.cx(e, k0)
+        if spare:
+            # As in tick: e = P.top*e waits for its clear on a borrowed H wire.
+            u = take()
+            C.cx(e, u)
+            C.ccx(P.top, u, e)
+            C.free([e])
+            e = u
         # A plain lane has k <= 1 and adds (k + 1)f - 1, which is f ^ 1 or 2f ^ 3.
         plain()
         (ck0,) = C.alloc(1)
@@ -708,7 +715,7 @@ class TwoBitMod(Mod):
             C.ccx(P.top, chain[w], e)
         else:
             C.cx(chain[w], e)
-        C.free([e])
+        drop(e)
         P.write(chain[w])
         self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True)
         C.ccx(g0, k0, ck0)
@@ -780,7 +787,7 @@ class TwoBitMod(Mod):
         return None
 
     def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None,
-             tau=None, sw=None, tape=False, split=None, term=None):
+             tau=None, sw=None, tape=False, split=None, term=None, lean=False):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
         split picks the add-or-shift (see _add_or_shift); None takes SPLIT_ADD.
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally.
@@ -807,7 +814,11 @@ class TwoBitMod(Mod):
         turns back into that cell's s with X and CX instead of clearing it with a CCX.
 
         term, when given, is the terminal cell's g0 on the tick after it, which has no previous
-        cell and enters with S = term*R."""
+        cell and enters with S = term*R.
+
+        nxt may be True when there is a next cell whose wire the tick need not read (no tau).
+        lean clears sw across the second chain and rebuilds it from g0 and b after P's write, one
+        wire off the tick's peak for 2 CCX, for a tick that runs with a wire more around it."""
         if cell0 and not tape:
             return self._last_tick(C, prev, g, a, s, held, hand, tau)
         n, f, w = self.n, self.f, self.window
@@ -821,8 +832,6 @@ class TwoBitMod(Mod):
         word = s + [spill, high]
         if term is not None:
             assert prev is None
-            (rtop,) = C.alloc(1)
-            C.cx(s[n - 1], rtop)
         if prev is None:
             p = None
         elif held is not None:
@@ -843,6 +852,7 @@ class TwoBitMod(Mod):
             sw = g0
             C.cx(g0, b)
         elif tau is not None:
+            assert nxt is not True
             if not tape:
                 (sw,) = C.alloc(1)
                 C.ccx(g0, b, sw)
@@ -933,6 +943,11 @@ class TwoBitMod(Mod):
             C.cx(g0, nb1)
         C.cx(sw, b)
         late = [nb1]
+        if lean:
+            # sw = g0*b is idle until the tick's end; its wire goes to the second chain.
+            assert not (tape or cell0)
+            C.ccx(g0, b, sw)
+            late.append(sw)
         if spare:
             # e = P.top*e, so it waits for its clear on a borrowed H wire, clean when P.top = 1.
             u = take()
@@ -960,6 +975,9 @@ class TwoBitMod(Mod):
             C.cx(chain[w], e)
         drop(e)
         P.write(chain[w])
+        if lean:
+            (sw,) = C.alloc(1)
+            C.ccx(g0, b, sw)
         # The bottom carry c1 = l0*k0 stays: on a held lane l0 = R0, so it is the k0*R0 that bit one reads.
         self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True, keep=1)
         c1 = chain[1]
@@ -989,7 +1007,10 @@ class TwoBitMod(Mod):
         else:
             # Joel's bb0fe4e. V = (2*term + 1)*R here, so an even k is 2 only when V = 3R >= 2q.
             # Then R >= 2q/3, which is at least 2^(n - 1) because 4f < 2^n, and k = 0 has
-            # R < q/3 < 2^(n - 1): k's bit 1 is S's top bit, copied before the add.
+            # R < q/3 < 2^(n - 1): k's bit 1 is S's top bit at entry, term*R's, built here off
+            # the tick's peak.
+            (rtop,) = C.alloc(1)
+            C.ccx(term, a[n - 1], rtop)
             C.ccx(z, rtop, k1)
             C.ccx(term, a[n - 1], rtop)
             C.free([rtop])

@@ -991,9 +991,11 @@ class DialogMultiplier:
         return self._bezout_step
 
     def _bezout_tick(self, first, last, pebble=False, inline=False, tape=False, split=None,
-                     after=False):
-        """after marks the tick after the terminal cell, which takes that cell's g0 before flag."""
-        key = (first, last, pebble, inline, tape, split, after)
+                     after=False, lean=False):
+        """after marks the tick after the terminal cell, which takes that cell's g0 before flag.
+        Without inline, the tick takes no next-cell wire: it only needs to know there is a next
+        cell. lean passes on to the tick."""
+        key = (first, last, pebble, inline, tape, split, after, lean)
         if key not in self._bezout_ticks:
             C, n = self.C, self.mod.n
             if tape:
@@ -1017,14 +1019,16 @@ class DialogMultiplier:
                 # previous cell, and goes out holding [this cell is B1], or empty after the last.
                 # hand carries a B1's top two bits to the next tick the same way, zero elsewhere.
                 # tau, with inline, carries the B1 sweep's toggle from tick to tick.
-                out = self.narrow.tick(C, prev or None, g, nxt[0] if nxt else None, R, S,
+                out = self.narrow.tick(C, prev or None, g,
+                                       nxt[0] if nxt else None if last else True, R, S,
                                        pebble=pebble, held=None if first else flag[0],
                                        cell0=last, hand=hand, tau=tau[0][0] if tau else None,
-                                       split=split, term=term[0] if after else None)
+                                       split=split, term=term[0] if after else None, lean=lean)
                 flag[:] = [] if out is None else [out]
 
             # flag and hand come last: a last tick's output leaves them empty.
-            sizes = ([0 if first else 2, 2, 0 if last else 1, n, n] + ([1] if inline else [])
+            sizes = ([0 if first else 2, 2, 0 if last or not inline else 1, n, n]
+                     + ([1] if inline else [])
                      + ([1] if after else []) + [1, 2])
             self._bezout_ticks[key] = C.record_shape(tick, sizes)
         return self._bezout_ticks[key]
@@ -1084,6 +1088,8 @@ class DialogMultiplier:
         # With swr, cell i's swap bit s = g0 AND b sits on swr[i - 1] for 1 <= i <= T - 2; cells
         # T - 1 and 0 need none, since s is 0 on the terminal cell and g0 on cell 0.
         assert swr is None or (inline and lend_tail and not tail and T >= 3 and len(swr) == T - 2)
+        # Only the inline sweep reads the next cell's g0 in a tick.
+        reads_next = inline or swr is not None
         for i in reversed(range(T)):
             nxt_block = i // TICKS - 1
             if i % TICKS == 0 and 0 <= nxt_block < self.blocks:
@@ -1108,7 +1114,12 @@ class DialogMultiplier:
             pebble = edge or (tail and self.blocks > 0 and i == self.blocks * TICKS)
             pebble = pebble or (self.blocks > 0 and i in (0, 1))
             prev = [] if first else G[2 * i + 2:2 * i + 4]
-            nxt = [] if last else G[2 * i - 2:2 * i - 1]
+            nxt = [] if last or not reads_next else G[2 * i - 2:2 * i - 1]
+            # A tick that decodes the next block before it, or codes the previous one after it,
+            # runs with two blocks decoded, and tick 1 with block 0 out of its hold.
+            lean = (i % TICKS == 0 and 0 <= nxt_block < self.blocks
+                    or (i + 1) % TICKS == 0 and i + 1 < T and (i + 1) // TICKS < self.blocks
+                    or i == 1 and self.blocks > 0)
             if i == T - 1:
                 # S starts at zero and the terminal cell is A0, A1 or J, never B1.
                 for r, s in zip(Yr, S):
@@ -1133,7 +1144,7 @@ class DialogMultiplier:
                 # The tick after the terminal cell enters with S = g0*R, that cell's g0.
                 after = no_prev and not last
                 C.apply(self._bezout_tick(first, last, pebble, inline, split=self._split(i),
-                                          after=after),
+                                          after=after, lean=lean),
                         [prev, G[2 * i:2 * i + 2], nxt, Yr, S] + ([tau] if inline else [])
                         + ([[G[2 * T - 2]]] if after else []) + [flag, hand])
             prev_block = (i + 1) // TICKS
