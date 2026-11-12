@@ -1,7 +1,7 @@
 """Exact, complete, controlled fixed-addend point addition:
 |c>|R>|0> -> |c>|R + c*A>|0> for every R in E(F_q) encoded as little-endian
 affine (x, y) with infinity = (0, 0)."""
-from .arith import Mod, _maj, add_const, cswap, load_const
+from .arith import Mod, _maj, cswap, load_const
 from .builder import Circuit
 from .curve import Curve
 from .square import HalfSquares, SquareFold
@@ -733,33 +733,52 @@ class DialogMultiplier:
         cswap(C, g0, [offset], [b])
 
     def _euclid_tick0(self):
-        """First Euclid step on U=q, E=0, using unwritten tape for carries."""
+        """First Euclid step on U = q, E = 0. U is zero once q's bits flip, so it takes the carries
+        of x + g0*f1, which then become U = x without being cleared (Joel's 4748bb3)."""
         if self._euclid_tick0_block is None:
             C, q, n = self.C, self.mod.q, self.mod.n
             f1 = (1 << n) - q + 1
-            k = n - 1 - ((f1 & -f1).bit_length() - 1)
+            j = (f1 & -f1).bit_length() - 1
 
-            def step(U, V, E, cell, scr):
-                C.free(scr)
+            def step(U, V, E, cell):
                 g0, b = cell
                 C.cx(V[0], g0)
+                for i in range(n):
+                    if q >> i & 1:
+                        C.x(U[i])
+                # U[i] = g0*c_i, c_i the carry into bit i of x + f1, which has no bit below j.
+                # Where f1_i = 1, g0*(x_i OR c_i) = d ^ x_i*(g0 ^ d) with d = g0*c_i.
+                for i in range(j, n - 1):
+                    if i == j:
+                        C.ccx(g0, V[i], U[i + 1])
+                    elif f1 >> i & 1:
+                        C.cx(U[i], U[i + 1])
+                        C.cx(g0, U[i])
+                        C.ccx(U[i], V[i], U[i + 1])
+                        C.cx(g0, U[i])
+                    else:
+                        C.ccx(U[i], V[i], U[i + 1])
+                # V ^= g0*(f1 ^ c) makes V = x + g0*f1; then U ^= V ^ g0*f1 leaves U = x.
+                for i in range(j, n):
+                    if i > j:
+                        C.cx(U[i], V[i])
+                    if f1 >> i & 1:
+                        C.cx(g0, V[i])
+                for i in range(n):
+                    C.cx(V[i], U[i])
+                    if f1 >> i & 1:
+                        C.cx(g0, U[i])
+                # The select: U = q > x, so a subtract swaps and U keeps x; off g0, V still holds x
+                # and U takes q back, U ^= NOT g0*(x ^ q). x_0 = g0 and q_0 = 1.
+                C.x(g0)
+                C.cx(g0, U[0])
                 for i in range(1, n):
                     if q >> i & 1:
                         C.x(V[i])
                     C.ccx(g0, V[i], U[i])
                     if q >> i & 1:
                         C.x(V[i])
-                # The select left U[j] = q_j ^ g0*(v_j ^ q_j), so the first carry g0*v_j,
-                # j the lowest set bit of f1, is U[j], or U[j] ^ g0 ^ 1 when q_j = 1.
-                j = (f1 & -f1).bit_length() - 1
-
-                def low(t):
-                    C.cx(U[j], t)
-                    if q >> j & 1:
-                        C.cx(g0, t)
-                        C.x(t)
-
-                add_const(C, V, f1, ctrl=g0, low=low)
+                C.x(g0)
                 for wire in V:
                     C.cx(g0, wire)
                 C.cx(g0, E[0])
@@ -776,7 +795,7 @@ class DialogMultiplier:
                 if self.HELD:
                     C.cx(g0, b)
 
-            self._euclid_tick0_block = C.record_shape(step, [n, n, 1, 2, k])
+            self._euclid_tick0_block = C.record_shape(step, [n, n, 1, 2])
         return self._euclid_tick0_block
 
     def _euclid_pass(self, U: list[int], pool: list[int], held: list[int],
@@ -810,15 +829,13 @@ class DialogMultiplier:
         V, available, G = pool[:n], pool[n:], []
         lend = U[n - self.u_lent:]
         E = self.C.alloc(1)
-        f1 = (1 << n) - self.mod.q + 1
-        k = n - 1 - ((f1 & -f1).bit_length() - 1)
         for i in range(self.iters):
             w = self.widths[i]
             assert len(V) == w and len(available) >= 2
             cell, available = available[:2], available[2:]
-            tick0 = self._euclid_tick0() if i == 0 and w == n and len(available) >= k else None
+            tick0 = self._euclid_tick0() if i == 0 and w == n else None
             if tick0 is not None and tick0.wires <= set(tick0.flat_in) and set(tick0.flat_out) == set(tick0.flat_in):
-                self.C.apply(tick0, [U, V, E, cell, available[:k]])
+                self.C.apply(tick0, [U, V, E, cell])
             else:
                 # A tick leaves V below 2^(w' - 1), w' its own width.
                 top_clear = i >= 1 and w >= 3 and self.widths[i - 1] == w
