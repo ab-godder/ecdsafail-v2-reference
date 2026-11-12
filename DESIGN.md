@@ -852,7 +852,7 @@ On the low-wire build it is set to 37: the tick's peak rises from 1,260 to 1,263
 
 ## The balanced pair since 96255f2
 
-The twenty commits from `96255f2` to `75f8c47` cut CCX in the Bézout tick and the Euclid pass, and cut scheduled ticks in the Prefix, the Euclid step and the tick, for 5 more wires.
+The nineteen commits from `96255f2` to `75f8c47` cut CCX in the Bézout tick and the Euclid pass, and cut scheduled ticks in the Prefix, the Euclid step and the tick, for 5 more wires.
 At G, with `SPLIT_SKIP = 0` and after the post-emit passes: 1,263 -> 1,268 wires, 3,446,208 -> 3,402,198 CCX (T 24,123,456 -> 23,815,386), 15,935,010 -> 15,317,963 scheduled ticks, qubit-time 20,125,917,630 -> 19,423,177,084.
 The dial point `SPLIT_SKIP = 300` of the same tree is in "A dial on the split add".
 
