@@ -6,10 +6,11 @@ from .builder import Circuit
 from .curve import Curve
 from .square import HalfSquares, SquareFold
 from .two_bit import TwoBitMod
-from .model import tick_bound, tick_widths
+from .model import tick_bound, tick_joint, tick_widths
 from . import block0_code, tail_code, tape_block
 from .tape_block import FREE, TICKS
 from .builder import CCX, CX
+from typing import NamedTuple
 
 # K1: the CCX pairs, by op index within one Mod.cmodadd_const(ctrl, value, b) call, that equal CX
 # from ctrl on every canonical b < q and either ctrl, keyed by (q, value mod q). scripts/k1_check.py
@@ -58,6 +59,13 @@ def _rotate_left(C, ctrl, V, copies):
         C.cx(h, t)
 
 
+class Stretch(NamedTuple):
+    """Ticks start .. stop - 1 run their bits K and up as one high word on one label wire."""
+    start: int
+    stop: int
+    K: int
+
+
 class DialogMultiplier:
     """M(x, y) = (x, x*y mod q) for canonical 1 <= x < q; see model.py."""
 
@@ -72,6 +80,19 @@ class DialogMultiplier:
     # Give each cell a third wire for its old offset; see DESIGN.md, "Held offsets beside the tape".
     # Without it a tick strips on a fresh wire and the pass ends with the offset sweep.
     HELD = False
+    # Above a tick's joint threshold K, U and V are never both 2^K or more, so a tick may run those
+    # bits as one high word, 3 CCX a bit, on a label naming the register that holds it. Ticks go in
+    # stretches of one K; each stretch leaves its label wire for the inverse pass. See high_plan.
+    HIGH = True
+    HIGH_MIN = 2
+    # high_plan's gain model: CCX a high tick costs beyond its bits, and CCX a pass is charged for
+    # each label wire, which is held through the Bezout pass at the multiplier's wire peak.
+    HIGH_OVH = 5
+    HIGH_PRICE = 285
+    # Clean copies of g0*label for the high word's per-bit gates.
+    HIGH_COPIES = 16
+    # If set, the stretches to run instead of high_plan's; the checks use it.
+    HIGH_STRETCHES = None
 
     def __init__(self, C, mod):
         self.C, self.mod = C, mod
@@ -195,12 +216,14 @@ class DialogMultiplier:
 
     SELECT_COPIES = 16
 
-    def _shared_difference(self, U, V, g0, g1, top=None, kept=None, copies=()):
+    def _shared_difference(self, U, V, g0, g1, top=None, kept=None, copies=(), high=None):
         """Compare and form the even difference using one majority chain. With top set, bit w - 1
         is done by _top_bit on the domain that mode names. With kept, the chain's carries go onto
         those zero wires instead and stay there, which the inverse pass clears. copies are clean
-        wires that take g1 and g0 for the selects and are clean again on return."""
+        wires that take g1 and g0 for the selects and are clean again on return. With high =
+        (m, z), the top m bits are done by _high_word on label z, with copies as its scratch."""
         if kept is not None:
+            assert high is None
             return self._kept_difference(U, V, g0, g1, top, kept, copies)
         C = self.C
         (cin,) = C.alloc(1)
@@ -208,6 +231,9 @@ class DialogMultiplier:
         for wire in V:
             C.x(wire)
         chain = len(U) if top is None else len(U) - 1
+        if high is not None:
+            assert top is None and 1 <= high[0] < len(U)
+            chain = len(U) - high[0]
         # The majority chain, with each bit's two CX first: they read U[i] before the chain writes
         # it and only XOR into wires the chain also only XORs into, so the CCX ripple runs alone.
         C.cx(U[0], V[0])
@@ -218,7 +244,9 @@ class DialogMultiplier:
         C.cx(V[0], U[0])
         for i in range(1, chain):
             C.ccx(carries[i], V[i], U[i])
-        if top is None:
+        if high is not None:
+            self._high_word(U[chain:], V[chain:], carries[chain], g0, g1, high[1], copies)
+        elif top is None:
             C.ccx(g0, U[-1], g1)
         else:
             self._top_bit(C, top, g0, U[-1], V[-1], U[-2], g1)
@@ -255,7 +283,8 @@ class DialogMultiplier:
             C.cx(c1[j % len(c1)], U[i])
             C.cx(c0[j % len(c0)], V[i])
         C.free([cin])
-        for wire in V:
+        # _high_word leaves its bits un-complemented already.
+        for wire in V[:chain] if high is not None else V:
             C.x(wire)
         for j, wire in enumerate(V[1:]):
             C.cx(c1[j % len(c1)], wire)
@@ -335,6 +364,93 @@ class DialogMultiplier:
             for h, t in reversed(tree):
                 C.cx(h, t)
 
+    def _high_copies(self, m):
+        return min(self.HIGH_COPIES, m // 2)
+
+    def _high_scratch(self, m):
+        """Clean wires _high_word borrows: the borrows E_0 .. E_m, g0*z and its copies."""
+        return m + 2 + self._high_copies(m)
+
+    def _high_word(self, U, V, cw, g0, g1, z, scratch):
+        """The chain's top m bits, where U or V is zero (the joint threshold). On entry V holds
+        NOT v, cw the carry c into these bits, and g1 is 0. z names the register holding the word
+        X = U ^ V: 1 for U, 0 for V, either when X = 0. A subtract takes one borrow
+        e = g0*(c ^ z) off X, the word of the larger minus the smaller, so V's bits end as
+        X - e and U's are cleared when z: the borrow chain E_(i+1) = E_i AND NOT X_i, up and down,
+        and one CCX a bit for U, 3 in place of the majority cell's 4. The swap is g0*z, or the
+        borrow leaving the top, g1 = g0*z ^ E_m. V's bits are left so that the caller's CX from
+        g1, with no NOT, gives X - e, the top borrow's all-ones word back to 0. scratch goes back
+        clean."""
+        C, m = self.C, len(U)
+        E, zg = scratch[:m + 1], scratch[m + 1]
+        zc = [zg] + list(scratch[m + 2:m + 2 + self._high_copies(m)])
+        for u, v in zip(U, V):
+            C.cx(u, v)
+        C.ccx(g0, z, zg)
+        tree = _fan(C, zg, zc[1:])
+        # U ^= zg * X, with V = NOT X: zg ^ zg * V.
+        for i, (u, v) in enumerate(zip(U, V)):
+            C.cx(zc[i % len(zc)], u)
+            C.ccx(zc[i % len(zc)], v, u)
+        C.cx(z, cw)
+        C.ccx(g0, cw, E[0])
+        C.cx(z, cw)
+        for i, v in enumerate(V):
+            C.ccx(E[i], v, E[i + 1])
+        C.cx(zg, g1)
+        C.cx(E[m], g1)
+        # The borrows go in before the chain comes down, so neither ripple waits on a CX: with
+        # V = X ^ E, the borrowed word, E_(i+1) = E_i AND NOT X_i is E_i AND V_i. The NOT sits
+        # between CX from E_i, so in both directions E_i and V_i reach each chain's CCX at the same
+        # tick and the depth pass orients those CCX by the chain alone.
+        for i, v in enumerate(V):
+            C.cx(E[i], v)
+            C.x(v)
+            C.cx(E[i], v)
+            C.cx(E[i], v)
+        for i, v in reversed(list(enumerate(V))):
+            C.ccx(E[i], v, E[i + 1])
+        C.cx(z, cw)
+        C.ccx(g0, cw, E[0])
+        C.cx(z, cw)
+        for i, (u, v) in enumerate(zip(U, V)):
+            C.cx(u, v)
+            C.cx(zc[i % len(zc)], v)
+        for h, t in reversed(tree):
+            C.cx(h, t)
+        C.ccx(g0, z, zg)
+
+    def _or_into(self, bits, target, scratch):
+        """target ^= OR of bits, as a tree of OR gates on scratch, which goes back clean."""
+        C = self.C
+
+        def gate(a, b, t):
+            C.x(a)
+            C.x(b)
+            C.ccx(a, b, t)
+            C.x(a)
+            C.x(b)
+            C.x(t)
+
+        if len(bits) == 1:
+            C.cx(bits[0], target)
+            return
+        free, steps, level = list(scratch), [], list(bits)
+        while len(level) > 2:
+            nxt = []
+            for k in range(0, len(level) - 1, 2):
+                t = free.pop(0)
+                steps.append((level[k], level[k + 1], t))
+                nxt.append(t)
+            if len(level) % 2:
+                nxt.append(level[-1])
+            level = nxt
+        for a, b, t in steps:
+            gate(a, b, t)
+        gate(level[0], level[1], target)
+        for a, b, t in reversed(steps):
+            gate(a, b, t)
+
     @staticmethod
     def _top_bit(C, mode, g0, A, B, Cw, H):
         """Bit w - 1 of the shared difference in place of its MAJ, g1 and unwind (5 CCX). On entry
@@ -413,6 +529,60 @@ class DialogMultiplier:
             plan[i], total = k, total + k
         return plan
 
+    def _spare_counts(self):
+        """Per tick, the clean wires the pass has for the step once the tick has its cell."""
+        n, W = self.mod.n, self.widths
+        free, out = self.tape_external, []
+        for i in range(self.iters):
+            free -= 2
+            out.append(free)
+            nxt = W[i + 1] if i + 1 < self.iters else self.pass_tail_width
+            free += W[i] - nxt + sum(1 for j in range(nxt, W[i]) if j >= n - self.u_lent)
+        return out
+
+    def _high_fits(self, t, K, spare):
+        m = self.widths[t] - K
+        return (1 <= t < self.iters - 1 and m >= max(1, self.HIGH_MIN)
+                and self._high_scratch(m) <= spare[t])
+
+    def high_plan(self):
+        """The stretches of ticks that run their bits K and up as a high word. A stretch's K is
+        its first tick's joint threshold; later ticks' thresholds are no higher, so it holds for
+        them. The first tick sets the label wire to [U >= 2^K] by an OR, and every tick XORs its
+        g1 into it: a swap leaves U below 2^K, so the word is V's after it, or there is none.
+        No other tick changes which register holds it, and K never moves inside a stretch, so the
+        label stays right. It is left as the stretch's junk wire for the inverse pass. A dynamic
+        program picks the stretches that maximise the gain model: per tick, its high bits less
+        HIGH_OVH; per stretch, less the OR and HIGH_PRICE."""
+        if self.HIGH_STRETCHES is not None:
+            return [Stretch(*s) for s in self.HIGH_STRETCHES]
+        if not self.HIGH or self.HELD or self.KEEP:
+            return []
+        T, W = self.iters, self.widths
+        joint, spare = tick_joint(self.mod.q, T), self._spare_counts()
+        best, back = [0] * (T + 1), [None] * (T + 1)
+        for a in range(T):
+            if best[a] > best[a + 1]:
+                best[a + 1], back[a + 1] = best[a], None
+            K = joint[a]
+            if not self._high_fits(a, K, spare):
+                continue
+            acc = -(2 * (W[a] - K) - 3) - self.HIGH_PRICE
+            b = a
+            while b < T and self._high_fits(b, K, spare):
+                acc += W[b] - K - self.HIGH_OVH
+                if best[a] + acc > best[b + 1]:
+                    best[b + 1], back[b + 1] = best[a] + acc, a
+                b += 1
+        out, t = [], T
+        while t > 0:
+            if back[t] is None:
+                t -= 1
+            else:
+                out.append(Stretch(back[t], t, joint[back[t]]))
+                t = back[t]
+        return out[::-1]
+
     @staticmethod
     def _strip_copies(w, top_clear):
         """Clean wires the strip's rotation of _strip_len wires takes for its control."""
@@ -423,30 +593,37 @@ class DialogMultiplier:
         return w - 2 if top_clear else w - 1
 
     def _euclid_step(self, w: int, top_clear: bool = False, narrow: bool = False, last: bool = False,
-                     keep: int = 0, sw: bool = False, cp: int = 0):
+                     keep: int = 0, sw: bool = False, cp: int = 0, hi=None):
         """top_clear: the tick before ran at the same width, so V is below 2^(w - 1) on entry
         and the second strip's last swap, of two zero bits, never fires.
         narrow: the next width is w - 1, so by E7 this step leaves U below 2^(w - 1).
         last: the pass's last tick, whose input reaches (U, V, E) = (1, 0, 0) by E3.
         sw: the cell has a fourth wire, zero on entry, which the step leaves holding s = g0 AND b.
-        cp: the step takes that many clean wires last, as copies of the strip's control, and
-        returns them clean."""
+        cp: the step takes that many clean wires, as copies of the strip's control and scratch,
+        and returns them clean.
+        hi: (m, init) for a tick of a stretch; see high_plan. The step takes the stretch's label
+        wire last. init: the stretch's first tick, which sets the label to [U >= 2^(w - m)]."""
         if last:
             top_clear = narrow = False
             keep = 0
             sw = False
             cp = 0
-        key = (w, top_clear, narrow, last, keep, sw, cp)
+            hi = None
+        assert hi is None or (not self.HELD and not keep and cp >= self._high_scratch(hi[0]))
+        key = (w, top_clear, narrow, last, keep, sw, cp, hi)
         if key not in self._euclid_steps:
             C = self.C
 
             def step(U, V, E, cell, *extra):
-                kept = extra[:1] if keep else ()
-                copies = extra[-1] if cp else []
+                rest = list(extra)
+                kept = (rest.pop(0),) if keep else ()
+                copies = rest.pop(0) if cp else []
+                label = rest.pop(0)[0] if hi else None
                 g0, b = cell[:2]
                 offset = E[0]
                 if not self.HELD:
-                    self._unheld_step(U, V, E, cell, top_clear, narrow, last, kept, copies)
+                    self._unheld_step(U, V, E, cell, top_clear, narrow, last, kept, copies,
+                                      hi and (hi[0], hi[1], label))
                     return
                 held = cell[2]
                 if last:
@@ -490,14 +667,16 @@ class DialogMultiplier:
                 # A subtract keeps its swap s on E and holds the old offset e beside the cell.
                 cswap(C, g0, [offset], [held])
 
-            sizes = [w, w, 1, (4 if sw else 3) if self.HELD else 2] + ([keep] if keep else []) + ([cp] if cp else [])
+            sizes = [w, w, 1, (4 if sw else 3) if self.HELD else 2] + ([keep] if keep else []) + \
+                ([cp] if cp else []) + ([1] if hi else [])
             self._euclid_steps[key] = C.record_shape(step, sizes)
         return self._euclid_steps[key]
 
-    def _unheld_step(self, U, V, E, cell, top_clear, narrow, last, kept, copies):
+    def _unheld_step(self, U, V, E, cell, top_clear, narrow, last, kept, copies, hi=None):
         """The Euclid step on a two-wire cell, as before the held offsets: a subtract keeps its swap
         on E and moves the old offset onto b, and the strip runs on a fresh wire that the step
-        clears. The pass's offset sweep then leaves the same swept tape as the held step."""
+        clears. The pass's offset sweep then leaves the same swept tape as the held step.
+        hi: (m, init, z) runs the top m bits as a high word on label z, which then takes g1."""
         C, w = self.C, len(V)
         g0, b = cell
         offset = E[0]
@@ -518,9 +697,18 @@ class DialogMultiplier:
         top = None
         if w >= 2 and (top_clear or narrow):
             top = "both" if top_clear and narrow else "top_clear" if top_clear else "narrow"
+        high = None
+        if hi:
+            m, init, z = hi
+            top, high = None, (m, z)
+            if init:
+                self._or_into(U[w - m:w], z, copies[:m - 2])
         C.cx(offset, V[0])
         C.cx(V[0], g0)
-        self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if kept else None, copies)
+        self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if kept else None, copies, high)
+        if hi:
+            # The label's update: a swap moves the word to V or leaves both registers below 2^K.
+            C.cx(b, z)
         V[:] = V[1:] + V[:1]
         # A no-subtract tick strips a second bit when V + E is even. two implies NOT g0, and
         # the subtract's swap below is the identity when g0 = 0, so the strip and the clear of
@@ -593,18 +781,31 @@ class DialogMultiplier:
 
     def _euclid_pass(self, U: list[int], pool: list[int], held: list[int],
                      block0_raw: bool = False, kept: list[int] | None = None,
-                     sweep: bool = True, swr: list[int] | None = None) -> None:
+                     sweep: bool = True, swr: list[int] | None = None,
+                     labels: list[int] | None = None) -> None:
         # The pool starts as V plus clean external tape. It ends as the zero wires U did not
         # take back, then tape; U ends as its low wires and those zero wires. The boundary is a
         # permutation of U and the pool together. held, iters wires, starts zero and ends with
         # each subtract cell's old offset, zero elsewhere; only the inverse pass clears it.
         # swr, if given, starts zero and ends with cells 1 to T - 2's swap bits s = g0 AND b.
+        # labels, one wire a stretch of high_plan, starts zero and ends with each stretch's label;
+        # only the inverse pass clears it. A caller that gives none gets them as fresh wires.
         n = self.mod.n
         assert swr is None or len(swr) == self.iters - 2
         assert len(held) == self.held_count
         assert self.HELD or swr is None
         plan = self.kept_plan() if kept is not None else [0] * self.iters
         assert kept is None or len(kept) == sum(plan)
+        stretches = self.high_plan()
+        if labels is None:
+            labels = self.C.alloc(len(stretches))
+        assert len(labels) == len(stretches)
+        joint, spare_at, high = tick_joint(self.mod.q, self.iters), self._spare_counts(), {}
+        for j, s in enumerate(stretches):
+            for t in range(s.start, s.stop):
+                assert t not in high and s.K >= joint[t] and self._high_fits(t, s.K, spare_at)
+                assert not plan[t] and not self.HELD
+                high[t] = (self.widths[t] - s.K, t == s.start, j)
         at = 0
         V, available, G = pool[:n], pool[n:], []
         lend = U[n - self.u_lent:]
@@ -640,9 +841,17 @@ class DialogMultiplier:
                 spare = self.iters - 1 - i if self.HELD else len(available)
                 cp = 0 if last else min(max(self._strip_copies(w, top_clear), 2 * self.SELECT_COPIES),
                                         spare)
+                hi = high.get(i)
+                if hi:
+                    # The high word's scratch is clean again before the copies are taken.
+                    assert spare == spare_at[i]
+                    cp = max(cp, self._high_scratch(hi[0]))
                 if cp:
                     regs.append(held[self.iters - cp:] if self.HELD else available[len(available) - cp:])
-                self.C.apply(self._euclid_step(w, top_clear, narrow, last, plan[i], on_sw, cp), regs)
+                if hi:
+                    regs.append(labels[hi[2]:hi[2] + 1])
+                self.C.apply(self._euclid_step(w, top_clear, narrow, last, plan[i], on_sw, cp,
+                                               hi and hi[:2]), regs)
             G.extend(cell[:2])
             next_width = self.widths[i + 1] if i + 1 < self.iters else self.pass_tail_width
             assert w - 1 <= next_width <= w
@@ -947,9 +1156,11 @@ class DialogMultiplier:
         # CCX for it and the CCX that cleared the B1 mark made from it, and halves the unsweep.
         swr = C.alloc(T - 2) if self.SWAP_WIRES and self.HELD and inline and not self.blocks and T >= 3 else None
         kept = C.alloc(sum(self.kept_plan()))
-        regs = [U, pool, held, kept] + ([swr] if swr is not None else [])
-        E = C.run(lambda U, pool, held, kept, *sw: self._euclid_pass(
-            U, pool, held, raw0, kept, sweep=not inline, swr=sw[0] if sw else None), regs)
+        labels = C.alloc(len(self.high_plan()))
+        regs = [U, pool, held, kept, labels] + ([swr] if swr is not None else [])
+        E = C.run(lambda U, pool, held, kept, labels, *sw: self._euclid_pass(
+            U, pool, held, raw0, kept, sweep=not inline, swr=sw[0] if sw else None,
+            labels=labels), regs)
         if raw0:
             self._code_block0(U, pool)
         lent = self.lent_after_pass
@@ -981,8 +1192,8 @@ class DialogMultiplier:
             C.free([reg[i] for reg, i in places])
             for (reg, i), w in zip(places, raw):
                 reg[i] = w
-        C.apply(E, [Yr, pool, held, kept] + ([swr] if swr is not None else []), inverse=True)
-        C.free(held + kept + (swr or []))
+        C.apply(E, [Yr, pool, held, kept, labels] + ([swr] if swr is not None else []), inverse=True)
+        C.free(held + kept + labels + (swr or []))
         load_const(C, Yr, q)
         Xr[:] = pool[:n]
         C.free(Yr + pool[n:])

@@ -137,6 +137,13 @@ def tick_widths(q, ticks):
     return [min(n, max(1, ((w >> 2 * t).bit_length() + 1) // 2) - (t <= cut)) for t in range(ticks)]
 
 
+def tick_joint(q, ticks):
+    """Per tick, the least K with 8^K > 2 q^2 (q - 1) / 4^t. The potential u v max(u, v) is at
+    most that bound before tick t, so u and v are never both 2^K or more."""
+    w = 2 * q * q * (q - 1)
+    return [((w >> 2 * t).bit_length() + 2) // 3 for t in range(ticks)]
+
+
 def tick_tape(q, x, ticks):
     """Semantic (add, bit) tape: bit is the swap, or the second strip when add is 0."""
     u, v, tape = q, x, []
