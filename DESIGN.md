@@ -29,6 +29,7 @@ Their statements are C1–C4 and R1–R4 in `INVARIANTS.md`.
   It keeps c2, c6, c9 and c11 on wires and c12 on bit 11's selector, clears each other one once the next kept carry is built, and rebuilds them on the way down, at 2 CCX per dropped carry.
   The mux cell already drops c1 to pay for k2, so this saves 6 more wires, at +12 CCX per tick.
   At secp256k1 a pebble search over these carries, whose up pass may clear and rebuild any carry many times, finds this peak at the same cost, one wire lower at +6 CCX more, which is above a wire's worth, and nothing two wires lower.
+  `db9ae43` went back to keeping every low carry, and `00b723f` deleted the kept-carry choice and the pebble search with it.
 - **The quiet run's prefix top.** M's top below its last is read only by `M.write`, so it is cleared right after M is built and recomputed on a new wire just before the write.
   That is 1 wire at +2 CCX per tick.
 
@@ -362,6 +363,7 @@ The recorded block's input/output wire sets agree and contain every used wire.
 If width, supply or that shape contract fails, the first step falls back to `_euclid_step`; later steps always use the general block.
 The borrowed wires are zero at tick 0's entry/exit and the mirror points in the inverse pass.
 They may hold nonzero tape at E's exit, so they are not generally clean scratch there.
+`40221e7` replaces this construction: tick 0's carries now go on U's own wires and become U = x, with no borrowed wires and no low callback (see "A high word in the Euclid pass"). Its outputs are the ones above, and it still runs only when the first width is n, else the first step is `_euclid_step`; the tape-wire supply condition is gone.
 
 ### Inline kernel constants and reflection
 
@@ -430,6 +432,7 @@ At the other measured merged primes below 20,000 where this schedule runs, CCX c
 The uncoded terminal cell is never B1, so when the existing tail lend applies, tick T - 2 uses the no-prev shape and the terminal b release moves before that tick.
 That released b is unread until the existing end-of-pass X and CX restore it.
 These changes leave the nonmerged path and no-tail-lend instances unchanged.
+The cap-four schedule has not run since `db9ae43`, and `00b723f` deleted it; the `pebble` flag the ticks still take selects nothing in the tick.
 
 The codec's primitives 4, 128, 145, 162, 188 and 197 use the six checked CX substitutions, giving a 30-CCX reversible code.
 Its contract holds on all 8,042 window words and all 4,022 pre-map images; 6,254 window words have changed codewords, and each block uses the same shape for encoding and decoding.
@@ -479,6 +482,7 @@ The tick-zero select leaves U[j] = q_j XOR g0 times (v_j XOR q_j).
 For the lowest set bit j of the following constant, the first carry g0 times v_j is U[j], complemented with g0 and one when q_j is one.
 An optional low callback supplies that carry during computation and uncomputation; every other adder caller retains the default carry primitive.
 The full circuit loses eight CCX and keeps the same clean-wire contract.
+`40221e7` removes this carry with the rest of tick 0's borrowed-wire add; no caller passes `low` any more.
 
 ## Tail-code control substitutions
 
@@ -501,6 +505,7 @@ This branch builds on ab-godder's `mike/comp-ab-godder-pr9-286e36a3ba9f` (`lowt-
 On a held lane l0 = R0, so c1 is the k0 AND R0 term of bit one, and bit one reads it from c1 instead of computing and uncomputing it on a fresh wire around its use.
 c1 is cleared with one CCX, l0 AND k0, after the B1 drop and before k0 changes, and its wire is freed.
 Every tick call with a previous cell saves 2 CCX, 764 of the 766 calls at secp256k1, so the circuit at G loses 1,528 CCX at the same 3,135 wires.
+Since `56d326c` c1 also holds low[1] ⊕ a[1] across the compare; see "c1 before the compare".
 
 ## Held offsets beside the tape
 
@@ -537,6 +542,7 @@ That is 3 CCX per tick with a previous and a next cell, for +2 clean wires at th
 The first chain's bottom carry l0·(one ⊕ K0) sits on a clean wire and survives its fall; after k = K + e, `cx(l0, c1)` and `ccx(l0, e, c1)` make it the second chain's l0·k0, since l0 = 1 implies one = 1.
 That is 1 CCX per tick for +1 clean wire during the first chain.
 Together they take G from 3,206,027 to 3,202,969 CCX at 3,135 wires.
+`600e0e2` now makes the hand-over inside the add's top with one CCX, and `703fd8d` puts l0 on the second handed-over wire; see "Bézout tick: five cuts from PR #32" and "Three wires off the tick".
 
 ## Square wire trades
 
@@ -755,7 +761,8 @@ This branch trades the wire spends above back for a circuit whose peak is the mu
 Three switches, all class attributes, select it; each restores a construction the tree already had or adds a square path that fits under that peak.
 
 - `DialogMultiplier.HELD = False` drops the held offsets (384 wires). The step runs on a two-wire cell as before "Held offsets beside the tape": a subtract keeps its swap on E and moves the old offset onto b, the strip runs on a fresh wire `two` that the step clears with one CCX, and the pass ends with the offset sweep, one controlled swap a cell, which leaves E zero and the same swept tape. `_unheld_step` is that step with the depth changes on it; swap wires need held, so they are off too.
-  The strip and the clear of `two` now go before the subtract's swap cswap(g0, E, b). two implies NOT g0 and that swap is the identity when g0 = 0, so on every state they read the same E and b either way; with the swap first, the strip waited for the selects' g1 copies to clear, which cost about 640,000 ticks at G.
+  The strip, the clear of `two` and the subtract's swap cswap(g0, E, b) may go in either order. two implies NOT g0 and that swap is the identity when g0 = 0, so on every state they read the same E and b either way.
+  This build first put the strip and the clear before the swap, because with the swap first the strip waited for the selects' g1 copies to clear, which cost about 640,000 ticks at G. "Euclid step order for depth" puts the swap first again: g1's copies now clear before it, and the strip takes copies away from g1's and g0's.
   The strip's and the selects' control copies go on the pass's unwritten wires, the last of `available`: each is zero until a later step takes it as a cell, and the inverse pass, undoing step i only after every later step, finds it zero again. At G this gives the same ticks as copies on held wires.
   `scripts/step_check.py` runs each two-wire variant, with and without kept carries and copies, on every state against the step at `a4d4c28`, the commit before held, and its kept wires against the held step at `3cb492c`; the dropped-CCX controls apply to it too.
 - `DialogMultiplier.KEEP = 0` and `RAW_TAPE = False`: no kept Euclid carries, and the tape is block-coded again (see "Seven-tick whole-block capacity codec" and the tape codes), which takes 55 wires off the Bézout peak for 13,768 CCX at G.
@@ -786,7 +793,8 @@ So X becomes X - gen*(Y^2 - K), where K = (beta - f)(beta - 1) + f(2^n - 1) - (b
 
 At G the multiplier sets the peak: its Bézout pass holds the coded tape (713 wires), R and S (512), c, f0 and f1, and the tick's own scratch, about 30 wires, for 1,260; its Euclid pass peaks at 1,232 and the square at 1,241.
 Going lower means taking wires out of `TwoBitMod.tick`, whose handed-over pair, shared bottom carry and kept low carries each spend wires to save CCX.
-Above 1,260 the switches buy CCX and a few ticks. Measured at G before the post-emit passes, which take off about 3.4%:
+At `75f8c47` the peak is 1,268 and still the Bézout tick's: `P_CAP` added 3 wires to the tick, "Three wires off the tick" took 3 off, and the high word's 8 label wires are live through the Bézout pass. The square peaks at 1,244.
+Above 1,260 the switches buy CCX and a few ticks. Measured at G on this build, before every later section and before the post-emit passes, which take off about 3.4%:
 
 | wires | switches | CCX | ticks |
 |---|---|---|---|
@@ -819,13 +827,265 @@ Per tick it is 4n + 1 CCX against 3n + 2, 255 more at secp256k1, and the add alo
 `scripts/add_check.py` (`I2.add`) runs every variant, both adds, held lanes on and off, and 1, 2, 4 and 7 copies, at n = 3 to 7 on every (J, a, word), and requires word = 2 * word on J and word + (a >> 1) mod 2^(n + 2) off J on the domain (word's top two bits 0 on J, and on every lane without held lanes), with J and a unchanged and every other wire 0. Its controls, a dropped CCX at four places and the up pass's line XORs emitted top down, must fail.
 At G the emission goes from 19,116,010 to 16,862,405 ticks for 3,185,039 to 3,381,135 CCX (T 22,295,273 to 23,667,945), 11.49 ticks a CCX, at 4,096 wires; after the post-emit passes, 18,475,761 to 16,225,970.
 The toy curves with the merged tick run it in the exhaustive rows; their wire counts do not change.
+`b0d1fc5` later rewrote the one-pass add's down pass, whose D is no longer a CCX control there; see "The one-pass add's down pass".
+Since `600e0e2` both adds also make the B1 hand-over in their top, one CCX each: 771 CCX for the one-pass add and 1,027 for the split at n = 256.
 
 ### A dial on the split add (`SPLIT_SKIP`)
 
-`SPLIT_SKIP` Bezout ticks of each pass, spread evenly over its T ticks (tick i when floor(i·k/T) steps), keep the one-pass add; each is its own recorded tick, so the definitions stay the same over addends. At G each skipped tick runs twice (M and its inverse) and gives back 2 × 255 CCX for about 2 × 2,870 ticks, 11.5 ticks a CCX, linearly: skip 38 is 17,080,113 ticks at 3,362,191 CCX (T 23,535,337), skip 96 is 17,421,385 at 3,332,495 (T 23,327,465). It is 0 here. The toy rows pass at skips 1, 3 and all.
+`SPLIT_SKIP` Bezout ticks of each pass, spread evenly over its T ticks (tick i when floor(i·k/T) steps), keep the one-pass add; each is its own recorded tick, so the definitions stay the same over addends. Each skipped tick runs twice, in M and its inverse. The tree's default is 0. The toy rows pass at skips 1, 3 and all.
+At G on `75f8c47`, after the post-emit passes, both points have 1,268 wires:
+
+| `SPLIT_SKIP` | CCX | T | scheduled ticks | qubit-time |
+|---:|---:|---:|---:|---:|
+| 0 | 3,402,198 | 23,815,386 | 15,317,963 | 19,423,177,084 |
+| 300 | 3,249,110 | 22,743,770 | 17,297,294 | 21,932,968,792 |
+
+The dial is linear between them: each step gives back about 510.3 CCX for about 6,598 scheduled ticks, 12.9 ticks a CCX.
+This section used to give 2 × 255 CCX for about 2 × 2,870 emitted ticks a step, 11.5 ticks a CCX. That was measured on an older tree; since then the rest of the tick has changed and `b0d1fc5` made the one-pass add faster, so a step's price is the one above.
 
 ### A cap on the tick's high Prefix (`P_CAP`)
 
 `Prefix` takes an optional cap on its block length (iwnlcern's PR #24, `6b5d78b`). Its AND-top and increment contracts hold for every partition into blocks, as `Prefix`'s docstring argues block by block, so only the shape changes.
-Only the tick's high-word P reads `P_CAP`. It is None here: at G each cap below 63 adds 1 to 10 top wires, and this entry is at the 4,096-wire cap. On the split add, cap 37 is 16,369,100 emitted ticks at 4,099 wires (16 gives 16,518,084 at 4,106, 24 16,469,062 at 4,102, 31 16,401,654 at 4,100, 48 16,414,677 at 4,098, 63 16,491,661 at 4,097), so it is for a base with wires below the cap.
+Only the tick's high-word P reads `P_CAP`. At the 4,096-wire cap it was None, because at G each cap below 63 adds 1 to 10 top wires. On the split add, cap 37 is 16,369,100 emitted ticks at 4,099 wires (16 gives 16,518,084 at 4,106, 24 16,469,062 at 4,102, 31 16,401,654 at 4,100, 48 16,414,677 at 4,098, 63 16,491,661 at 4,097), so it is for a base with wires below the cap.
 On the low-wire build it is set to 37: the tick's peak rises from 1,260 to 1,263 wires, and the emission falls from 17,072,158 to 16,580,397 ticks (15,935,010 after the post-emit passes); caps 31, 44 and 48 gave 1,264, 1,262 and 1,262 wires at higher qubit-time.
+37 is now the class default, and `square.PREFIX_CAP` = 37 caps the square's Prefixes the same way; see "Prefix write and init for depth".
+
+## The balanced pair since 96255f2
+
+The twenty commits from `96255f2` to `75f8c47` cut CCX in the Bézout tick and the Euclid pass, and cut scheduled ticks in the Prefix, the Euclid step and the tick, for 5 more wires.
+At G, with `SPLIT_SKIP = 0` and after the post-emit passes: 1,263 -> 1,268 wires, 3,446,208 -> 3,402,198 CCX (T 24,123,456 -> 23,815,386), 15,935,010 -> 15,317,963 scheduled ticks, qubit-time 20,125,917,630 -> 19,423,177,084.
+The dial point `SPLIT_SKIP = 300` of the same tree is in "A dial on the split add".
+
+The commits came from parallel branches, each measured on its own base and then put on one branch; the sections below group them by what they touch.
+So each figure below is from the commit's own branch unless it says otherwise.
+Emitted ticks are counted before the post-emit passes, and are compared only with emitted ticks.
+
+Seven of the ideas are Joel's (jtaroreh), from PR #32 (`lowt-climb`), reimplemented here for our tick and step; each section names the commit it follows.
+The high word in the Euclid pass is a reduced form of his, because his form holds junk wires that a 1,268-wire build cannot.
+
+## Bézout tick: five cuts from PR #32
+
+These five follow Joel's list under "Bezout pass, glue and start" and "Bezout pass, low window".
+Together they take 3,446,208 -> 3,441,366 CCX (-4,842) at 1,263 wires; emitted ticks 16,580,397 -> 16,541,630, and after the post-emit passes 15,935,010 -> 15,897,752.
+`scripts/model_check.py` passes on each, with a control per cut that must fail.
+
+**z from `one`** (`707d3a0`, Joel's `a43c00c`).
+After the second chain the wire `one` holds k0·k1, and the compare needs z = (g0 ⊕ k2)·¬k0, k1 and k2 being the wires after the held lane's cswap.
+k ≤ 4 gives k0·k2 = 0 on both wires, so z = one ⊕ k0·(k1 ⊕ g0) ⊕ g0 ⊕ k2.
+That is one CCX where clearing `one` and building z took two: -766 CCX, -2,298 emitted ticks.
+
+**No compare on the tick after the terminal cell** (`a587f0c`, Joel's `bb0fe4e`).
+That tick has no previous cell, and it enters with S = g0·R, g0 being the terminal cell's, because the terminal step S ^= g0·R is the only gate before it.
+On a subtract lane V = 2S + R = 3R < 3q.
+An even k is 2 only when 3R ≥ 2q, and then R ≥ 2^(n-1) because 4f < 2^n; k = 0 has R < q/3 < 2^(n-1).
+So k's bit 1 is z times S's top bit.
+A copy of that bit, made before the add, gives it with one CCX, and CCX(g0, R's top) clears the copy before the swap, in place of the 511-CCX compare.
+-1,018 CCX, -10,078 emitted ticks.
+
+**The hand-over inside the add's top** (`600e0e2`, Joel's `5f16404`).
+The add's top already holds the final bit n - 1 and, on t, the carry into bit n.
+On a B1 lane one CCX moves bit n - 1 to a clean wire `hn`; B1 there is 1 ⊕ g0 ⊕ J, made on the g0 wire by an X and a CX.
+t's clear then reads a control that is 0 on B1, so t keeps bit n and becomes the second handed-over wire.
+Both adds do this, the split and the one-pass, with one CCX where the tick spent two after the add: -764 CCX, -299 emitted ticks.
+`scripts/add_check.py` runs the hand-over variant of both adds on every (g0, J, a, word) of its domain, with dropped-CCX controls.
+
+**Ones runs in the low window** (`00b723f`, Joel's `ca60e8a`).
+A run of two or more window bits on which every k ≥ 1 adds a 1 (bits 8 and 9 at secp256k1) now rides a Prefix, as the quiet run does.
+The run's bits sit under an X, so its complement is incremented by 1 - carry, and a bridge out ^= s ⊕ (carry ⊕ s)·top gives the run's carry out, s being the XOR of the selectors set at the run's lowest bit.
+Two carry cells a chain, 8 CCX a tick, become the Prefix and its bridges, 7.
+The chains take the list of runs from `TwoBitMod._runs`, and the pebble search that read the single run (`_cap4_schedule`, `_pebble_schedule`, `_kept_carries`), uncalled since `db9ae43`, is deleted.
+-766 CCX, -20,700 emitted ticks.
+`model_check.py`'s primes have no low-window run, so its rows never reached the quiet run's Prefix either; `scripts/runs_check.py` runs M forward and inverse on every x at 11 primes that have quiet runs, ones runs or both, and its three controls fail.
+
+**Cell 0's tick with no add and no swap** (`bffa084`, Joel's `d21aeb3`).
+The pass ends with R = 0, so a J or B1 lane enters cell 0 with R = 0, and a subtract lane's result is 0.
+The tick's output is then (0, R), and R is a function of S alone: -2T mod q on a plain lane, as the complement of V + (k + 1)f - 1, and 2H mod q on a held one.
+So `_last_tick` shifts on J by n controlled moves, reduces with no add, and clears R with R ^= g0·S in place of the swap.
+On the lane T = R = 0 that leaves R = q; R's top bit flags that lane and the compare clears it.
+The add it drops is the split add, 4n + 1 CCX, so the cut is 764 CCX a tick here against 509 in Joel's tree: -1,528 CCX, -5,392 emitted ticks.
+It runs only off the swap-wire tape, which is the low-wire build's case; the held path's swap-wire tape keeps the old cell-0 tick.
+
+## A high word in the Euclid pass
+
+**The chain's CX off its ripple** (`695a2be`).
+In `_shared_difference` the majority chain's two CX a bit now all go before its CCX ripple, and the unwind's CX all go after its ripple.
+Each moved CX XORs into a wire that the CCX it passes also only XORs into, after every op that reads that wire, so the map is the same.
+The depth pass already found this order for the plain step; written out, it holds in both directions without the pass, which the high step below needs.
+0 CCX, -15,598 emitted ticks.
+`scripts/step_check.py` passes on every variant to width 7 and catches its 828 dropped-CCX controls.
+
+**The high word** (`4126811`; the idea is Joel's `d5378a1`).
+Before tick t the potential u·v·max(u, v) is at most 2q²(q - 1)/4^t, so U and V are never both 2^K or more, K being the least integer with 8^K above that bound (`model.tick_joint`).
+Above K one register is zero, so a subtract takes one borrow off the word that is there.
+`_high_word` runs the borrow chain E_(i+1) = E_i AND NOT X_i up and down on X = U ⊕ V and clears U's bits with one CCX a bit: 3 CCX a bit in place of the majority cell's 4.
+The swap is g1 = g0·z ⊕ E_m, with z the label below.
+
+Joel's tree keeps the flag z = [U ≥ 2^K] as one junk wire a tick, and his lazy word keeps more: 883 junk wires for his stages 1 to 3.
+The low-wire peak cannot hold them, so the label here is free: it names the register that holds the word when the word is nonzero, and may name either when it is zero.
+Inside one K a tick updates it with CX(g1, z), because a swap leaves U below 2^K, so the word is V's after it, or there is none.
+Across a drop of K the label cannot follow without a junk bit, so `DialogMultiplier.high_plan` groups the ticks into stretches of one K.
+A stretch's first tick ORs U's bits K and up into a fresh label wire, and the stretch leaves that wire for the inverse pass to clear.
+A dynamic program picks the stretches: it counts each tick's high bits less `HIGH_OVH` = 5, and charges each stretch its OR and `HIGH_PRICE` = 285 CCX, because a label wire is held through the Bézout pass at the multiplier's peak.
+At secp256k1 that is 8 stretches over ticks 38 to 309, so 8 label wires.
+`high_plan` is empty when `HELD` or `KEEP` is set, so only the low-wire build runs the high word.
+
+The borrows are flipped into V before the down ripple, and the one NOT sits between CX from E_i, so the depth pass orients each ripple's CCX by its chain in both directions.
+Before the chain's CX moved off the ripple, the depth pass kept the high step's input order, the low chain ran 11 ticks a link instead of 7, and the build took 430,354 more emitted ticks.
+On `695a2be`: 3,446,208 -> 3,406,848 CCX (-39,360), 1,263 -> 1,271 wires, +10,124 emitted ticks.
+
+`scripts/high_check.py` runs the high step on every state to width 7 against the plain step, with dropped-CCX, flipped-label and broken-joint controls, and catches 193 of 193.
+It runs M forward and inverse at q = 251 to 4093 on forced plans, because the toy primes' own plans are empty, with an under-threshold and a no-update control.
+It simulates the shipped label at secp256k1 on 3,003 x over 816,816 stretch ticks, with 0 wrong.
+
+**Tick 0's carries in U** (`40221e7`, Joel's `4748bb3`).
+Tick 0 runs on U = q, so flipping q's bits leaves U zero, and U's wires take the carries of x + g0·f1 directly, 1 CCX a bit, with f1 = 2^n - q + 1.
+Then V ^= g0·(f1 ⊕ c) gives V = x + g0·f1, and U ^= V ⊕ g0·f1 leaves U = x on every lane, so the carries are never uncomputed and need no scratch.
+The select becomes U ^= ¬g0·(x ⊕ q), which keeps x on a subtract, since U = q > x always swaps, and puts q back otherwise.
+Tick 0 drops from 1,016 to 764 CCX a pass: -1,008 CCX, -13,312 emitted ticks.
+It borrows no tape wires and uses no low callback, so it supersedes the carries of "Euclid tick 0 on its initial boundary" and all of "First carry in tick zero".
+`scripts/tick0_check.py` runs it against the previous tick 0 on every V at nine toy primes and on 4,102 V at secp256k1, and catches its 40 dropped-CCX controls.
+
+On top of the Bézout cuts these three take 3,441,366 -> 3,400,998 CCX (-40,368) and 1,263 -> 1,271 wires.
+Alone on `96255f2`, after the post-emit passes, they gave 15,942,879 scheduled ticks against 15,935,010: the emitted-tick gain did not survive the passes, so what they buy is the CCX.
+
+## Euclid step order for depth
+
+Two commits (`5be01af`, `75f8c47`) move gates and scratch wires in the two-wire step, `_unheld_step` and `_shared_difference`, with the step's map, CCX and wires unchanged.
+
+- `two` gets its own wire, allocated before `cin`. With LIFO reuse the next tick's `cin` was `two`'s wire, so the next ascent waited on the clear of `two`.
+- The cell's swap cswap(g0, E, b) goes before the strip's rotation and the clear of `two`. It is the identity under `two`, which implies ¬g0, so both read the same b and E on either side of it.
+- `_shared_difference(untree=False)` returns g1's and g0's fan trees, and the step clears g1's copies before the swap writes b and g0's after the swap reads g0.
+- The fans after the unwind run on the copies alone, one loop per bit, top bits first.
+- The strip takes its copies from the far end of `copies`, away from g1's and g0's. Four copies are set straight from `two` and the rest fan from the fourth, whose own swaps are the middle ones. The stripped bit is cleared on V[L - 1] after the first swap layer, and the second layer's controls are shifted so that its bottom swap is on an idle copy.
+- The top bit's selects on g1 and g0 go before their fans.
+- On a high tick the low chain's top `HIGH_EARLY` = 6 bits' selects read only g1, g0 and their own bits. So `_high_word` calls back (`mid`) once g1 is final, and those selects run on g1 and g0 themselves while the borrows run back down. The low unwind then starts as soon as the high word gives the carry back, not after the label copy's clear and g0's fan.
+
+One standalone Euclid pass goes from 1,254,056 to 1,226,464 emitted ticks forward and from 1,256,355 to 1,229,694 inverse.
+`HIGH_EARLY` at 3, 4, 6 and 10 gave 1,232,100, 1,230,198, 1,229,694 and 1,229,934 inverse, with forward within 150 ticks of each other.
+On `74f114a` the full build goes from 16,071,621 to 15,963,005 emitted ticks, and from 15,437,079 to 15,343,007 scheduled ticks after the post-emit passes (-94,072).
+`scripts/strip_check.py` (new) runs the step against `74f114a`'s on every state to width 11, with dropped-swap, dropped-clear, moved-clear and dropped-CCX controls; `step_check.py`, `high_check.py` (its step part to width 9), `model_check.py` and `keep_check.py` pass.
+
+## Prefix write and init for depth
+
+Three commits (`862f728`, `aa38e0b`, `f3d322c`) change only the layout and gate order of `Prefix`, which serves the tick's P and M and the square, at the same CCX and wires.
+
+**The carry handed down early.**
+Each block now clears its carry p = a·t as (a′·t)·v′: the block below's carry, converted while this block is still descending, times that block's chain top.
+That is exact because a = a′·v′.
+So the next block waits on one clear instead of a clear and then a carry conversion.
+
+**Copies of the carry on freed tops.**
+The inverse tick's write was bound by the carry's fan-out: 36 NOT-form CCX on one control, at 8 ticks each.
+Each block's carry is now copied onto up to `COPIES` = 3 tops of blocks already written, one copy per `COPY_EVERY` = 3 of its bits, and its increments take the copies.
+Those tops are freed, so they are zero; the one freed last is left out, because its clear is still settling.
+p is not written while the copies exist, so each equals p, and the same CX clears them.
+The carry takes the top positions and the copies the lower ones, in contiguous chunks; round-robin had put the carry on bit 2, which in the inverse tick sits next to the following block's clear on the same wire.
+
+**Staggered carriers.**
+Every block's chain sat on bits[0..m - 2], so each block's init waited about two CCX steps, 19 ticks, behind the block below on the same wires, and the inverse tick's uncompute the same.
+`Prefix.__init__` now picks the carriers by a rough count of when the blocks below are done with each wire.
+Any carriers from bits[:start] and the lower tops are valid, because the Prefix argument holds for every choice.
+The tick's forward P init goes from 266 to 202 ticks on the path, and the inverse uncompute from 559 to 487.
+
+On `96255f2` the three take 16,580,397 -> 16,383,926 -> 16,350,897 -> 16,284,641 emitted ticks, and 15,935,010 -> 15,628,584 scheduled ticks after the post-emit passes (-306,426).
+`scripts/prefix_check.py` gains rows with a copy on every block (`COPY_EVERY = 1`) at 5 to 14 bits, capped and not: 182 cases, 0 mismatched, 368 of 368 controls caught.
+
+**The square's Prefixes capped** (`74f114a`).
+`square.PREFIX_CAP` = 37 caps the square's four Prefixes, of 221 to 223 bits, as `P_CAP` caps the tick's P.
+-7,131 emitted ticks at the same CCX; the extra tops raise the square's peak from 1,241 to 1,244, under the tick's.
+Caps 24, 31 and 16 gave 16,510,580, 16,511,082 and 16,511,720 emitted ticks against 16,511,196, and 24 puts the square at 1,247.
+`halves_check.py`, `square_check.py` and `prefix_check.py` pass; the caps do not reach toy sizes, so `halves_check.py`'s secp256k1 lanes cover them.
+
+## Three wires off the tick
+
+The peak is the Bézout tick at its second chain's top, just before `P.write`, and two commits take three wires off it.
+
+**e on a borrowed H wire, and l0 on the handed-over wire** (`703fd8d`).
+e = P.top·e, so after its last reader it moves to a spare H wire, clean when P.top = 1, for one CCX; `db9ae43` had undone that trade at the 4,096-wire cap.
+l0 = g0·R0 is 0 on a B1, and the second handed-over wire is 0 elsewhere, so l0 lives on that wire at no CCX.
+c1's update reads l0·(nb1 ⊕ e) before nb1 is uncomputed, and a CX takes the B1 bit back out of k0 at the end.
+The wires the second chain reuses go to its second and third carries; with e moved alone, the freed wire became the first carry, whose CCX waited for e's clear, at +10,017 emitted ticks.
++764 CCX, -2 wires, -23,266 emitted ticks.
+
+**sw cleared on the ticks with two blocks decoded** (`93c3a85`).
+The ticks beside each block edge, and tick 1, run with one more decoded tape wire, 1,231 live outside the tick against 1,230.
+Those 109 ticks a pass clear sw = g0·b after the first chain and rebuild it after P's write, 2 CCX each.
+Cell 0's tick and the tick after the terminal cell lose a wire too: e waits on a spare H wire there as in the tick, and `rtop` is built at the compare from term·R's top bit.
+Without the inline sweep a tick takes no next-cell wire.
++436 CCX, -1 wire, -37 emitted ticks.
+
+On `bffa084` the two take 1,263 -> 1,260 wires for +1,200 CCX; with the square cap, 15,895,628 -> 15,866,132 scheduled ticks after the post-emit passes.
+The tick's scratch at the peak is now 30 wires: P 10, M 5, the second chain's carries 10, c1, `three`, sw, `hn`, and l0 on the second handed-over wire; the lean ticks drop sw.
+With the 8 label wires of the high word the peak is 1,268.
+`scripts/wires_check.py` runs M forward and inverse at seven primes whose H has two or more bits, on every x against every y below 300 and 6 sampled y above, with four controls: e left on its wire, the B1 bit left in k0, c1's update without its CCX, and a lean tick that does not rebuild sw.
+
+## The one-pass add's down pass
+
+`_add_or_shift_d`, the add on the `SPLIT_SKIP` ticks, now restores carry line i to c_i right after its carry CCX (`b0d1fc5`).
+Its sum reads c_i, then o_i, after the J-swap, which is now CCX(J, u, v) on the word's own bits i and i + 1, and the parity D reads l_i = c_i ⊕ o_i before the carry CCX.
+Off J, u then takes c_i ⊕ o_i, the sum bit. On J the swap moves w_i up and v's value down, v's value there being D less the lines above, and u adds l_i to it, so the value that reaches word[0] is D ⊕ (every l_i) = 0.
+Only the c_i read sits between the swap and the next carry CCX, which overwrites the line: 24 ticks a bit in the down pass, against about 24.5 before on `74f114a`.
+The CCX are the same, 771 at n = 256 with the hand-over, and so are the four scratch wires.
+The standalone add goes from 8,488 to 7,979 emitted ticks forward and from 8,483 to 7,973 inverse, and a steady chain of ticks from 33,913 to 32,960 a tick.
+At `SPLIT_SKIP = 160` on `74f114a` the build goes from 17,307,479 to 17,156,114 emitted ticks, -473 a one-pass tick; at 0 it is unchanged.
+`add_check.py` gains one-pass controls, one CCX dropped at three places, D's last read dropped, and the line restored after the sum reads it, and catches them all; `runs_check.py` and `model_check.py` pass with every Bézout tick on the one-pass add.
+
+The down pass cannot go below about 23 ticks a bit with one J CCX a bit.
+Off J word[i] must gain c_i and on J it must not, and the only J gate is the swap, so c_i must be read after bit i's swap.
+c_i lives on line i only until CCX_(i-1) overwrites it, and a copy does not help, because two copies of c_i need two CCX to clear.
+Orders that reach 23 by hand lose it to the depth pass's list schedule.
+
+## c1 before the compare
+
+The tick's tail waited on the compare's last bits through bit_one(c1), which reads low[1] and a[1] (`56d326c`).
+c1 now takes low[1] ⊕ a[1] before the compare, which restores both, and gives it back after its own clear.
+That leaves only CCX(p, c1, k2) after the compare, waiting on its top through z.
+0 CCX, 0 wires.
+On `74f114a` the scheduled ticks after the post-emit passes go from 15,437,079 to 15,412,035 (-25,044).
+Emitted ticks rise, from 16,071,621 to 16,522,140, because the emitter's depth pass schedules the new tick body worse and the post-emit passes recover it, so this change can only be judged after those passes.
+`check.py`'s toy rows and `check_file.py` on the post-passed circuit give 0 failures; dropping the restore or the early bit_one fails the toy rows.
+
+## Tried and set aside in the balanced search
+
+**Joel's lazy word and lag blocks.**
+One pending borrow with the window all ones is a redundant form, so resolving it maps two states to one and needs a junk bit each time; his tree holds 500 wires for it.
+The lag blocks sit on the lazy word and on flags rebuilt from junk wires.
+Neither fits a 1,268-wire build, so the rest of his Euclid gain is not available here.
+
+**More or fewer stretches.**
+`HIGH_PRICE` 180 gave 10 stretches, 1,273 wires and 3,404,068 CCX at 16,562,019 emitted ticks; 420 gave 6 stretches, 1,269 wires and 3,408,708 CCX at 16,560,731; 285 gives 1,271 wires and 3,405,840 CCX at 16,561,611.
+Both scored lower than 285 on the combined margin the search used, -160.9 and -161.0 against -160.3.
+
+**A rank-one Bézout start** (Joel's first J cells on unreduced integers).
+At J = 14 its conversion holds about 92 wires over the 1,228 live at the Bézout pass's start, against 35 free under the 1,263 peak: about 60 wires over, for about -7,800 CCX.
+This is an estimate; it was not built.
+
+**Cheaper one-pass adds.**
+Copies of J on the down pass gave +587 chain ticks, because J is not on its critical chain.
+The split's up-pass order changed nothing, because the depth pass already finds it.
+A running parity of the carry lines was slower and not exact on bit 0.
+Folding L into v before the carry CCX gave +764 chain ticks, and the same with a late read +224. A travelling carry gave -22 chain ticks but about 1,270 more standalone ticks inverse.
+A hybrid, some bits split and the rest one-pass, sits on the dial's own line, since a split bit saves at most 13 ticks for one CCX.
+
+**Prefix shapes.**
+Lending e's wire to the top block for a copy gave +14,171 emitted ticks, because e is cleared just before.
+Tapered caps gave +54,000 to +77,000.
+A single-CX selected carry for the low chains gave +11,874, because the path moves onto the selector wire.
+The first chain borrowing the H wires P's init frees first gave -4,213 alone and -1,100 with the staggered carriers, too little to keep.
+`P_CAP` 33 and 35 gave +89,000 and +34,000 emitted ticks; 41 and 44 save a wire for +125,000 and +63,000; other 10-block partitions were worse too.
+On the integrated tree `P_CAP` 33, 35, 41 and 44, and `SPLIT_COPIES` 3, 5 and 6, all scored at or below the shipped values.
+
+**More wires off the tick.**
+Every further option found costs 2 CCX a tick, a drop and a rebuild, against about 1.5 CCX a tick that a wire is worth here, so it pays only on the 109 edge ticks, which `93c3a85` already takes.
+Two other ways to the same 1,260 wires cost more emitted ticks than `93c3a85`: decoding the next block after its tick, +6,047, because the decode takes a wire the tick just freed, and clearing p instead of sw on the edge ticks, +4,915.
+
+**False dependencies in the tick.**
+With every allocation on a new wire, the tick would save at most 14 ticks forward and 1 inverse after the post-emit passes, and fresh scratch for every tick call saves 0.
+Allocating the earliest-freed wire first gave +168 and +200 ticks a tick, because early in the forward tick is late in the inverse.
+Moving CCX(J, low[1], k1) before the compare gave +25 and +26, because it delays the compare's start.
+Emit order inside a commuting run changes nothing, because the emitter's depth pass list-schedules every definition.
+
+**A faster Euclid subtract.**
+The ripple is 95% of a Euclid pass at 18 ticks a bit, the floor of an in-place majority chain.
+A high word off the ripple saves 7 ticks a bit for 1 CCX a bit, and a tree uncompute about 16 for 2; these and carry-select halves buy 6 to 8 ticks a CCX, below what the dial pays.
+Two alternating mark wires for the sweep after the last tick would cost a CCX a cell.
