@@ -33,11 +33,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from check import expand, structural
 from qec import flatten, sim
 from qec.arith import Mod
-from qec.builder import CCX, CX, Circuit
+from qec.builder import CCX, Circuit
 from qec.emit import write_circuit
 from qec.model import SECP256K1_Q, tick_bound, tick_joint, tick_pass
 from qec import point_add
-from qec.point_add import DialogMultiplier, Stretch
+from qec.point_add import DialogMultiplier
 
 
 @functools.lru_cache(maxsize=None)
