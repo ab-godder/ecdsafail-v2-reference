@@ -552,6 +552,183 @@ class TwoBitMod(Mod):
         C.x(sw)
         C.cx(tau, b)
 
+    def _last_tick(self, C, prev, g, a, s, held, hand, tau):
+        """Cell 0's tick, where g0 implies b, with no add and no swap (Joel's d21aeb3). The pass
+        ends with R = 0, so on entry a J or B1 lane has R = 0 and a subtract lane has
+        2T + R = 0 mod q, or 2H - R = 0 mod q when held. The result on a subtract lane is then R
+        itself, made from S alone:
+
+            plain:  S = -2T mod q = ~(V + (k + 1)f - 1) for V = 2T, k = floor(V / q)
+            held:   S = 2H mod q
+            J:      S = 4T mod q        B1:  S = 2T mod q
+
+        after which R ^= g0*S clears R in place of the swap. V + kf = r + e*2^n for r = V mod q,
+        so the plain lane's sum overflows exactly when e is set, as the other lanes' does, and
+        its complement is q - r. That is R, except on the lane T = R = 0, where it is q."""
+        n, f, w = self.n, self.f, self.window
+        g0, b = g
+        if hand is None:
+            assert prev is None
+            (spill, high) = C.alloc(2)
+        else:
+            (spill, high) = hand
+        word = s + [spill, high]
+        if prev is None:
+            p = None
+        elif held is not None:
+            p = held
+        else:
+            p = self._after_b1(C, prev)
+        up = prev[0] if prev else None
+        if tau is not None:
+            C.cx(tau, b)
+            if up is not None:
+                # t_1 = NOT g0_1 AND B1_0, and B1_0 = NOT x_0 because g0_0 implies x_0. t_0 = 0.
+                C.x(b)
+                C.x(up)
+                C.ccx(b, up, tau)
+                C.x(up)
+                C.x(b)
+        # b holds J = b ^ g0 from here to the end.
+        C.cx(g0, b)
+        for i in reversed(range(n)):
+            cswap(C, b, [word[i]], [word[i + 1]])
+        if p is not None:
+            # A held word is H - R0, with bit 0 clear.
+            C.ccx(p, a[0], word[0])
+        (l0,) = C.alloc(1)
+        low = [l0] + word[:n - 1]
+        L, H = low[:w], low[w:]
+        k0, k1, k2 = word[n - 1:n + 2]
+        (one,) = C.alloc(1)
+        C.x(one)
+        P, M = Prefix(C, H, cap=self.P_CAP), self._run_prefixes(C, L)
+        spare = H[:] if len(H) > 1 else []
+
+        def alloc():
+            (c,) = C.alloc(1)
+            return c
+
+        def take():
+            if not spare:
+                return alloc()
+            c = spare.pop()
+            C.x(c)
+            return c
+
+        def drop(c):
+            if c in H:
+                C.x(c)
+                spare.append(c)
+            else:
+                C.free([c])
+
+        def plain():
+            """Toggle the g0 wire between g0 and [plain subtract lane] = g0 ^ p."""
+            if p is not None:
+                C.cx(p, g0)
+
+        (three,) = C.alloc(1)
+        C.ccx(k0, k1, three)
+        selectors = [one, k0, k1, three]
+        masks = [f, f ^ 2 * f, f ^ 3 * f, self.corner ^ 4 * f]
+        chain = self._chain_up(C, L, selectors, masks, M, {}, take)
+        (e,) = C.alloc(1)
+        if H:
+            C.ccx(P.top, chain[w], e)
+        else:
+            C.cx(chain[w], e)
+        self._chain_down(C, L, selectors, masks, M, {}, chain, drop, False)
+        C.x(one)
+        C.ccx(three, e, k2)
+        C.ccx(e, k1, three)
+        C.free([one])
+        one = three
+        C.ccx(k0, e, k1)
+        C.cx(e, k0)
+        # A plain lane has k <= 1 and adds (k + 1)f - 1, which is f ^ 1 or 2f ^ 3.
+        plain()
+        (ck0,) = C.alloc(1)
+        C.ccx(g0, k0, ck0)
+        selectors = [one, k0, k1, k2, g0, ck0]
+        masks = [self.corner, f, 2 * f, 4 * f, f ^ 1, 2 * f ^ 2]
+        perch = self._perches(selectors, masks)
+        chain = self._chain_up(C, L, selectors, masks, M, perch, alloc)
+        if H:
+            C.ccx(P.top, chain[w], e)
+        else:
+            C.cx(chain[w], e)
+        C.free([e])
+        P.write(chain[w])
+        self._chain_down(C, L, selectors, masks, M, perch, chain, drop, True)
+        C.ccx(g0, k0, ck0)
+        C.free([ck0])
+        for x in word[:n]:
+            C.cx(g0, x)
+        plain()
+
+        if p is not None:
+            cswap(C, p, [k1], [k2])
+        # one = k0*k1 becomes z = (p ^ wire k2)*~k0, which is [k is 0 or 4] on a held lane and 0
+        # elsewhere, as in tick with p for g0.
+        z = one
+        if p is not None:
+            C.cx(p, k1)
+        C.ccx(k0, k1, z)
+        if p is not None:
+            C.cx(p, k1)
+            C.cx(p, z)
+        C.cx(k2, z)
+
+        for r, x in zip(a, [k0] + word[:n - 1]):
+            C.ccx(g0, x, r)
+        # R is now 0, or q on the lane T = R = 0, where S is q too. R's top bit flags that lane.
+        q = self.q
+        for i, (r, x) in enumerate(zip(a, [k0] + word[:n - 1])):
+            C.cx(r, x)
+            if i < n - 1 and q >> i & 1:
+                C.cx(a[n - 1], r)
+        plain()
+        C.ccx(g0, a[n - 1], k1)
+        C.ccx(g0, k1, a[n - 1])
+        # Wire k1 holds the flag on a plain lane and k's bit 2 on a held lane. With R = 0,
+        # [S >> 1 > R >> 1] is [S >= 2]: it clears bit 2 under z, and the flag is
+        # [S is 0] = ~S0 * ~[S >= 2] on a plain lane.
+        (zc,) = C.alloc(1)
+        C.x(k0)
+        C.ccx(g0, k0, zc)
+        C.cx(zc, k1)
+        C.cx(zc, z)
+        gt_into(C, low[1:], a[1:], k1, ctrl=z)
+        C.cx(zc, z)
+        C.ccx(g0, k0, zc)
+        C.x(k0)
+        C.free([zc])
+        plain()
+        if p is not None:
+            C.cx(k2, p)
+            C.x(k0)
+            C.ccx(p, k0, z)
+            C.x(k0)
+            C.cx(k2, p)
+            # 2H = S + kq and H's bit 0 is S's, so k = f*(S - 2*S0) mod 4.
+            if not f >> 1 & 1:
+                C.cx(k0, low[1])
+            C.ccx(p, low[1], k2)
+            if not f >> 1 & 1:
+                C.cx(k0, low[1])
+        C.free([z])
+        self._drop_after_b1(C, prev, p)
+        C.ccx(b, low[1], k1)
+        if f >> 1 & 1:
+            C.ccx(b, k0, k1)
+        C.cx(g0, b)
+        C.free([l0, spill, high])
+        if hand is not None:
+            hand[:] = []
+        s[:] = s[-1:] + s[:-1]
+        return None
+
     def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None,
              tau=None, sw=None, tape=False, split=None, term=None):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
@@ -560,7 +737,8 @@ class TwoBitMod(Mod):
 
         held is the wire the tick before handed over, holding [prev is B1], or None to compute
         it here. cell0 says this is cell 0, where g0 implies b (Euclid's tick 0 runs on U = q > x,
-        so its subtract always swaps): there sw is g0 itself and J is b ^ g0.
+        so its subtract always swaps). Off the tape it is _last_tick; on it, sw is g0 itself and J
+        is b ^ g0.
         Returns the wire that holds [this cell is B1] for the next tick, or None when nxt is None.
 
         hand is the pair of wires the tick before handed over, holding H's bits n and n + 1 when
@@ -580,6 +758,8 @@ class TwoBitMod(Mod):
 
         term, when given, is the terminal cell's g0 on the tick after it, which has no previous
         cell and enters with S = term*R."""
+        if cell0 and not tape:
+            return self._last_tick(C, prev, g, a, s, held, hand, tau)
         n, f, w = self.n, self.f, self.window
         tick_start = len(C.prims)
         g0, b = g
