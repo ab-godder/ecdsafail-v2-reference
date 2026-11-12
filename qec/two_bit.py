@@ -569,7 +569,7 @@ class TwoBitMod(Mod):
         C.cx(tau, b)
 
     def tick(self, C, prev, g, nxt, a, s, pebble=False, held=None, cell0=False, hand=None,
-             tau=None, sw=None, tape=False, split=None):
+             tau=None, sw=None, tape=False, split=None, term=None):
         """One tick of a swept tape. prev is the cell before, or None on the first tick.
         split picks the add-or-shift (see _add_or_shift); None takes SPLIT_ADD.
         nxt is the next cell's g0 wire, or None on the last tick, whose B1 reduces normally.
@@ -592,7 +592,10 @@ class TwoBitMod(Mod):
         With tape, each cell's swap bit s = g0 AND b sits on the tape's swap wire: sw is this
         cell's, read in place of a computed sw, and the returned [this cell is B1] is formed on it
         in place. held is then the previous cell's swap wire holding its mark, which this tick
-        turns back into that cell's s with X and CX instead of clearing it with a CCX."""
+        turns back into that cell's s with X and CX instead of clearing it with a CCX.
+
+        term, when given, is the terminal cell's g0 on the tick after it, which has no previous
+        cell and enters with S = term*R."""
         n, f, w = self.n, self.f, self.window
         tick_start = len(C.prims)
         g0, b = g
@@ -602,6 +605,10 @@ class TwoBitMod(Mod):
         else:
             (spill, high) = hand
         word = s + [spill, high]
+        if term is not None:
+            assert prev is None
+            (rtop,) = C.alloc(1)
+            C.cx(s[n - 1], rtop)
         if prev is None:
             p = None
         elif held is not None:
@@ -746,7 +753,15 @@ class TwoBitMod(Mod):
         C.cx(g0, k1)
         C.cx(g0, z)
         C.cx(k2, z)
-        gt_into(C, a[1:], low[1:], k1, ctrl=z)
+        if term is None:
+            gt_into(C, a[1:], low[1:], k1, ctrl=z)
+        else:
+            # Joel's bb0fe4e. V = (2*term + 1)*R here, so an even k is 2 only when V = 3R >= 2q.
+            # Then R >= 2q/3, which is at least 2^(n - 1) because 4f < 2^n, and k = 0 has
+            # R < q/3 < 2^(n - 1): k's bit 1 is S's top bit, copied before the add.
+            C.ccx(z, rtop, k1)
+            C.ccx(term, a[n - 1], rtop)
+            C.free([rtop])
         mark_even(z)
         C.free([z])
         if p is not None:

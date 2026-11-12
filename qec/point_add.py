@@ -757,8 +757,10 @@ class DialogMultiplier:
             self._bezout_step = C.record_shape(step, [2, mod.n, mod.n])
         return self._bezout_step
 
-    def _bezout_tick(self, first, last, pebble=False, inline=False, tape=False, split=None):
-        key = (first, last, pebble, inline, tape, split)
+    def _bezout_tick(self, first, last, pebble=False, inline=False, tape=False, split=None,
+                     after=False):
+        """after marks the tick after the terminal cell, which takes that cell's g0 before flag."""
+        key = (first, last, pebble, inline, tape, split, after)
         if key not in self._bezout_ticks:
             C, n = self.C, self.mod.n
             if tape:
@@ -777,6 +779,7 @@ class DialogMultiplier:
 
             def tick(prev, g, nxt, R, S, *rest):
                 *tau, flag, hand = rest
+                term = tau.pop() if after else None
                 # flag comes in holding [previous cell is B1], or 0 on a first tick, which has no
                 # previous cell, and goes out holding [this cell is B1], or empty after the last.
                 # hand carries a B1's top two bits to the next tick the same way, zero elsewhere.
@@ -784,11 +787,12 @@ class DialogMultiplier:
                 out = self.narrow.tick(C, prev or None, g, nxt[0] if nxt else None, R, S,
                                        pebble=pebble, held=None if first else flag[0],
                                        cell0=last, hand=hand, tau=tau[0][0] if tau else None,
-                                       split=split)
+                                       split=split, term=term[0] if after else None)
                 flag[:] = [] if out is None else [out]
 
             # flag and hand come last: a last tick's output leaves them empty.
-            sizes = [0 if first else 2, 2, 0 if last else 1, n, n] + ([1] if inline else []) + [1, 2]
+            sizes = ([0 if first else 2, 2, 0 if last else 1, n, n] + ([1] if inline else [])
+                     + ([1] if after else []) + [1, 2])
             self._bezout_ticks[key] = C.record_shape(tick, sizes)
         return self._bezout_ticks[key]
 
@@ -893,8 +897,12 @@ class DialogMultiplier:
                 if not hand:
                     # No tick before this one handed a pair over, so its cell is not B1.
                     hand = C.alloc(2)
-                C.apply(self._bezout_tick(first, last, pebble, inline, split=self._split(i)),
-                        [prev, G[2 * i:2 * i + 2], nxt, Yr, S] + ([tau] if inline else []) + [flag, hand])
+                # The tick after the terminal cell enters with S = g0*R, that cell's g0.
+                after = no_prev and not last
+                C.apply(self._bezout_tick(first, last, pebble, inline, split=self._split(i),
+                                          after=after),
+                        [prev, G[2 * i:2 * i + 2], nxt, Yr, S] + ([tau] if inline else [])
+                        + ([[G[2 * T - 2]]] if after else []) + [flag, hand])
             prev_block = (i + 1) // TICKS
             if (i + 1) % TICKS == 0 and i + 1 < T and prev_block < self.blocks:
                 C.free(self._encode(G, prev_block, swept))
