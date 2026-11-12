@@ -46,11 +46,8 @@ def lanes_of(nbits):
     lanes = 1 << nbits
     out = []
     for k in range(nbits):
-        m = 0
-        for lane in range(lanes):
-            if lane >> k & 1:
-                m |= 1 << lane
-        out.append(m)
+        block = ((1 << (1 << k)) - 1) << (1 << k)
+        out.append(block * (((1 << lanes) - 1) // ((1 << (1 << (k + 1))) - 1)))
     return out
 
 
@@ -69,7 +66,8 @@ def run_step(block, w, label_in, ops=None):
 def domain_masks(w, m, top_clear, narrow, init):
     """(good, flipped, joint_broken) lane masks over (U, V, E, z)."""
     K = w - m
-    good = flipped = broken = 0
+    size = max(1, (1 << (2 * w + 2)) // 8)
+    good, flipped, broken = bytearray(size), bytearray(size), bytearray(size)
     for lane in range(1 << (2 * w + 2)):
         u, v, e = lane & ((1 << w) - 1), lane >> w & ((1 << w) - 1), lane >> 2 * w & 1
         z = lane >> (2 * w + 1) & 1
@@ -83,17 +81,17 @@ def domain_masks(w, m, top_clear, narrow, init):
             continue
         uh, vh = u >> K, v >> K
         if uh and vh:
-            broken |= 1 << lane
+            broken[lane >> 3] |= 1 << (lane & 7)
             continue
         if init:
-            good |= 1 << lane
+            good[lane >> 3] |= 1 << (lane & 7)
             continue
         right = (uh and z) or (vh and not z) or (not uh and not vh)
         if right:
-            good |= 1 << lane
+            good[lane >> 3] |= 1 << (lane & 7)
         else:
-            flipped |= 1 << lane
-    return good, flipped, broken
+            flipped[lane >> 3] |= 1 << (lane & 7)
+    return tuple(int.from_bytes(b, "little") for b in (good, flipped, broken))
 
 
 def step_part(max_w):
@@ -269,10 +267,11 @@ def m_part(primes):
         DialogMultiplier.HIGH_STRETCHES = named["longest"]
         saved = DialogMultiplier._shared_difference
 
-        def no_update(self, U, V, g0, g1, top=None, kept=None, copies=(), high=None):
-            saved(self, U, V, g0, g1, top, kept, copies, high)
+        def no_update(self, U, V, g0, g1, top=None, kept=None, copies=(), high=None, **kw):
+            out = saved(self, U, V, g0, g1, top, kept, copies, high, **kw)
             if high is not None:
                 self.C.cx(g1, high[1])
+            return out
 
         DialogMultiplier._shared_difference = no_update
         bad = m_bad(q, ys, False)

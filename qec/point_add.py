@@ -216,12 +216,15 @@ class DialogMultiplier:
 
     SELECT_COPIES = 16
 
-    def _shared_difference(self, U, V, g0, g1, top=None, kept=None, copies=(), high=None):
+    def _shared_difference(self, U, V, g0, g1, top=None, kept=None, copies=(), high=None,
+                           untree=True):
         """Compare and form the even difference using one majority chain. With top set, bit w - 1
         is done by _top_bit on the domain that mode names. With kept, the chain's carries go onto
         those zero wires instead and stay there, which the inverse pass clears. copies are clean
         wires that take g1 and g0 for the selects and are clean again on return. With high =
-        (m, z), the top m bits are done by _high_word on label z, with copies as its scratch."""
+        (m, z), the top m bits are done by _high_word on label z, with copies as its scratch.
+        With untree False the copies of g1 and g0 are left set and their fan trees returned, for
+        the caller to clear (replaying each reversed) while g1 and g0 are still on their wires."""
         if kept is not None:
             assert high is None
             return self._kept_difference(U, V, g0, g1, top, kept, copies)
@@ -257,14 +260,20 @@ class DialogMultiplier:
         # This needs g1 => g0, which both g1 forms above give.
         # g1 and g0 are copied onto the clean copies, which take the selects round-robin, so the
         # selects are not one serial path on each; neither is written until the copies are cleared.
+        # The top bit's selects, on g1 and g0 themselves, go before the fans, which they would
+        # otherwise wait on; the next bits' selects have the unwind's 11 ticks a bit of slack.
         k = min(self.SELECT_COPIES, len(copies) // 2)
-        trees = [_fan(C, g1, copies[:k]), _fan(C, g0, copies[k:2 * k])]
         c1, c0 = [g1] + list(copies[:k]), [g0] + list(copies[k:2 * k])
+        trees = None
         for j, i in enumerate(reversed(range(1, chain))):
             C.ccx(c1[j % len(c1)], V[i], carries[i])
             C.x(carries[i])
             C.ccx(c0[j % len(c0)], carries[i], V[i])
             C.x(carries[i])
+            if trees is None:
+                trees = [_fan(C, g1, copies[:k]), _fan(C, g0, copies[k:2 * k])]
+        if trees is None:
+            trees = [_fan(C, g1, copies[:k]), _fan(C, g0, copies[k:2 * k])]
         # The unwind, each bit's CX after the whole ripple: CX(U[i], carries[i]) only XORs into a
         # wire the next lower CCX also only XORs into, and comes after the CCX that reads it. Run
         # backward, as the inverse pass runs it, the CX then go first and the ripple runs alone.
@@ -278,16 +287,26 @@ class DialogMultiplier:
         C.cx(carries[0], V[0])
         C.cx(U[0], carries[0])
         C.cx(carries[0], V[0])
-        for j, i in enumerate(range(1, chain)):
-            C.cx(U[i], V[i])
-            C.cx(c1[j % len(c1)], U[i])
-            C.cx(c0[j % len(c0)], V[i])
+        # The fans after the unwind run top bits first on the copies alone, so g1's own wire is free
+        # for the cell's swap as soon as the copies are cleared.
+        # Each bit's ops are in one loop, so no copy waits on a low bit before its next high one.
+        f1, f0 = c1[1:] or c1, c0[1:] or c0
+        n1 = 0
+        for j, i in enumerate(reversed(range(1, len(V)))):
+            if i < chain:
+                C.cx(U[i], V[i])
+                C.cx(f1[n1 % len(f1)], U[i])
+                C.cx(f0[j % len(f0)], V[i])
+                n1 += 1
+            # _high_word leaves its bits un-complemented already.
+            if high is None or i < chain:
+                C.x(V[i])
+            C.cx(f1[n1 % len(f1)], V[i])
+            n1 += 1
+        C.x(V[0])
         C.free([cin])
-        # _high_word leaves its bits un-complemented already.
-        for wire in V[:chain] if high is not None else V:
-            C.x(wire)
-        for j, wire in enumerate(V[1:]):
-            C.cx(c1[j % len(c1)], wire)
+        if not untree:
+            return trees
         for tree in trees:
             for h, t in reversed(tree):
                 C.cx(h, t)
@@ -697,6 +716,8 @@ class DialogMultiplier:
         top = None
         if w >= 2 and (top_clear or narrow):
             top = "both" if top_clear and narrow else "top_clear" if top_clear else "narrow"
+        # two's wire is not cin's, so the next tick's cin does not wait on the clear of two.
+        (two,) = C.alloc(1)
         high = None
         if hi:
             m, init, z = hi
@@ -705,15 +726,16 @@ class DialogMultiplier:
                 self._or_into(U[w - m:w], z, copies[:m - 2])
         C.cx(offset, V[0])
         C.cx(V[0], g0)
-        self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if kept else None, copies, high)
+        trees = self._shared_difference(U[:w], V[:w], g0, b, top, kept[0] if kept else None, copies,
+                                        high, untree=False)
         if hi:
             # The label's update: a swap moves the word to V or leaves both registers below 2^K.
             C.cx(b, z)
         V[:] = V[1:] + V[:1]
         # A no-subtract tick strips a second bit when V + E is even. two implies NOT g0, and
         # the subtract's swap below is the identity when g0 = 0, so the strip and the clear of
-        # two read the same E and b before that swap as after it, and go first.
-        (two,) = C.alloc(1)
+        # two read the same E and b after that swap as before it. The swap goes first, as soon as
+        # g1's copies are clear, so the next tick's start does not wait on the strip's tail.
         C.cx(offset, V[0])
         C.x(g0)
         C.x(V[0])
@@ -721,16 +743,40 @@ class DialogMultiplier:
         C.x(V[0])
         C.x(g0)
         C.cx(offset, V[0])
+        # g1's copies clear before the swap writes b, g0's after it reads g0.
+        t1, t0 = trees if trees else ((), ())
+        for h, t in reversed(t1):
+            C.cx(h, t)
+        # A subtract keeps its swap on E and moves the old offset to the cell.
+        cswap(C, g0, [offset], [b])
+        for h, t in reversed(t0):
+            C.cx(h, t)
+        # Under two, V[:L] = V[1:L] + V[:1] as two layers of disjoint swaps (_rotate_left's), with
+        # the stripped bit V0 = E cleared on V[L - 1] after the first layer, which leaves it there.
+        # The bottom swaps decide when the next tick can start: two takes the first layer's
+        # bottom swap and then the clear; a copy set first takes the next swap up and then the
+        # second layer's bottom swap; the rest fan from a second copy. The strip's copies come
+        # from the far end of copies, away from g1's and g0's, so the fan does not wait on them.
+        L = self._strip_len(w, top_clear)
+        cps = list(reversed(copies))[:self._strip_copies(w, top_clear)]
+        tree = [(two, c) for c in cps[:2]]
+        for h, t in tree:
+            C.cx(h, t)
+        if len(cps) > 2:
+            tree += _fan(C, cps[1], cps[2:])
+        ctl = [two] + cps
+        for p in range(L // 2):
+            cswap(C, ctl[p % len(ctl)], [V[p]], [V[L - 1 - p]])
+        C.ccx(two, offset, V[L - 1])
+        for p in range((L - 1) // 2):
+            cswap(C, ctl[(p + 1) % len(ctl)], [V[p]], [V[L - 2 - p]])
+        for h, t in reversed(tree):
+            C.cx(h, t)
         C.cx(two, b)
-        C.ccx(two, offset, V[0])
-        _rotate_left(C, two, V[:self._strip_len(w, top_clear)],
-                     copies[:self._strip_copies(w, top_clear)])
         C.x(g0)
         C.ccx(g0, b, two)
         C.x(g0)
         C.free([two])
-        # A subtract keeps its swap on E and moves the old offset to the cell.
-        cswap(C, g0, [offset], [b])
 
     def _euclid_tick0(self):
         """First Euclid step on U = q, E = 0. U is zero once q's bits flip, so it takes the carries
