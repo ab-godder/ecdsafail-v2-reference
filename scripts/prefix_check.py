@@ -6,7 +6,9 @@ For every length h up to --max-bits, with and without release()/restore() betwee
 versions run on all 2^(h+1) values of (bits, t) with clean scratch. The outputs must match and
 every other wire must be zero; the result must also be bits + t mod 2^h. With each block cap in
 CAPS that splits a block, the current version alone must give bits + t with clean scratch. Control:
-the current version with one CCX of write dropped must fail, capped or not. The tick's lengths
+the current version with one CCX of write dropped must fail, capped or not. With a carry copy on
+every block (COPY_EVERY = 1), every length from 5 bits gives bits + t with clean scratch, and one CX
+of write dropped must fail. The tick's lengths
 (WIDE) run at their caps on sampled lanes: a run of ones of every length from bit 0, which
 reaches every block's top, under random high bits, with t = 0 and 1, and 512 random lanes.
 """
@@ -21,12 +23,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from qec import sim
-from qec.builder import CCX, Circuit
+from qec.builder import CCX, CX, Circuit
 from qec.two_bit import Prefix
 from step_check import load_ref
 
 
-def build(Circ, Pre, h, release, drop=None, cap=None):
+def build(Circ, Pre, h, release, drop=None, cap=None, op=CCX):
     C = Circ()
     bits, (t,) = C.alloc(h), C.alloc(1)
     P = Pre(C, bits) if cap is None else Pre(C, bits, cap=cap)
@@ -37,7 +39,7 @@ def build(Circ, Pre, h, release, drop=None, cap=None):
     P.write(t)
     ops = C.prims
     if drop is not None:
-        ccx = [k for k in range(start, len(ops) // 4) if ops[4 * k] == CCX]
+        ccx = [k for k in range(start, len(ops) // 4) if ops[4 * k] == op]
         if not ccx:
             return None
         k = ccx[int(len(ccx) * drop)]
@@ -107,6 +109,28 @@ def main():
                         controls += 1
                         mut = run(built, h)
                         caught += mut[0] != want or bool(mut[1]) or not mut[2]
+        # Carry copies on every block of two or more bits, which the lengths above reach only at
+        # the default spacing beyond --max-bits: the same sum and clean scratch, and a dropped CX
+        # (a copy or its clear among them) must fail.
+        every = Prefix.COPY_EVERY
+        Prefix.COPY_EVERY = 1
+        try:
+            for h in range(5, a.max_bits + 1):
+                want = [(v & ((1 << h) - 1)) + (v >> h) & ((1 << h) - 1) for v in range(1 << (h + 1))]
+                for cap in (None, 2, 3):
+                    for release in (False, True):
+                        got = run(build(Circuit, Prefix, h, release, cap=cap), h)
+                        cases += 1
+                        if got[0] != want or got[1] or not got[2]:
+                            bad += 1
+                            print("MISMATCH copies", h, cap, release, flush=True)
+                    for frac in (0.0, 0.3, 0.6, 0.99):
+                        built = build(Circuit, Prefix, h, False, frac, cap=cap, op=CX)
+                        controls += 1
+                        mut = run(built, h)
+                        caught += mut[0] != want or bool(mut[1]) or not mut[2]
+        finally:
+            Prefix.COPY_EVERY = every
         # The tick's lengths at its caps, on lanes that reach every block's top: runs of ones from
         # bit 0 of every length, with t = 1 and 0, and random words.
         rng = random.Random(7)

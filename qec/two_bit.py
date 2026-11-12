@@ -84,36 +84,67 @@ class Prefix:
         self.blocks[-1] = (q,) + last[1:]
         self.released = None
 
+    # A block's carry is copied onto up to COPIES freed tops, one per COPY_EVERY of its bits past
+    # the first, so its increments fan out.
+    COPIES, COPY_EVERY = 3, 8
+
     def write(self, t):
         """bits += t, every wire restored or cleared."""
         C, bits = self.C, self.bits
+        # Tops of the blocks already written, freed and so zero, take copies of later carries.
+        pool = []
         assert self.released is None
         if not bits:
             return
         if len(bits) == 1:
             C.cx(t, bits[0])
             return
-        for a, p, x, u, v in reversed(self.blocks):
-            # p = a*v becomes a*t, the carry into this block.
+        blocks = self.blocks
+
+        def carry_in(j):
+            # p = a*v becomes a*t, the carry into block j.
+            a, p, x, u, v = blocks[j]
             C.cx(t, v)
             C.ccx(a, v, p)
             C.cx(t, v)
+
+        if blocks:
+            carry_in(len(blocks) - 1)
+        for j in reversed(range(len(blocks))):
+            a, p, x, u, v = blocks[j]
+            # The carry's copies are cleared by the same CX once its last increment is done; p
+            # itself is not written meanwhile. The top freed last is left out: its clear is still
+            # settling when this block starts.
+            ctl = [p] + pool[:-1][:min(self.COPIES, (len(x) - 1) // self.COPY_EVERY)]
+            for c in ctl[1:]:
+                C.cx(p, c)
             # x ^= p*below as x ^= p*NOT(below) before the uncompute, which reads below*x and
             # so is unchanged, then x ^= p once the block's chain is down: the chain holds only
             # the uncompute's CCX, and no later gate of the block reads x[i] or writes p.
             for i in reversed(range(1, len(x))):
                 below = x[0] if i == 1 else u[i - 2]
                 C.x(below)
-                C.ccx(p, below, x[i])
+                C.ccx(ctl[i % len(ctl)], below, x[i])
                 C.x(below)
                 C.ccx(below, x[i], u[i - 1])
             for i in reversed(range(1, len(x))):
-                C.cx(p, x[i])
+                C.cx(ctl[i % len(ctl)], x[i])
             C.cx(p, x[0])
+            for c in ctl[1:]:
+                C.cx(p, c)
             for w in reversed(u):
                 C.x(w)
-            C.ccx(t, a, p)
+            if j:
+                # The block below takes its carry now, while its chain is still up, and p = a*t
+                # clears as (a'*t)*v' with a = a'*v': the lower block's carry and chain top. So
+                # the next block waits on this clear alone, not on a clear then a carry.
+                carry_in(j - 1)
+                _, p_below, _, _, v_below = blocks[j - 1]
+                C.ccx(p_below, v_below, p)
+            else:
+                C.ccx(t, a, p)
             C.free([p])
+            pool.append(p)
         C.x(bits[0])
         C.ccx(t, bits[0], bits[1])
         C.x(bits[0])
