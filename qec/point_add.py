@@ -215,6 +215,8 @@ class DialogMultiplier:
 
 
     SELECT_COPIES = 16
+    # Low bits whose selects a high tick runs on g1 and g0 while its borrows run back down.
+    HIGH_EARLY = 6
 
     def _shared_difference(self, U, V, g0, g1, top=None, kept=None, copies=(), high=None,
                            untree=True):
@@ -247,8 +249,20 @@ class DialogMultiplier:
         C.cx(V[0], U[0])
         for i in range(1, chain):
             C.ccx(carries[i], V[i], U[i])
+        # The low chain's top bits' selects read only g1, g0 and their own bits, so on a high tick
+        # they go in on g1 and g0 themselves as soon as g1 is final, while the high word's borrows
+        # run back down; the unwind then starts as soon as the high word gives the carry back.
+        early = list(reversed(range(1, chain)))[:self.HIGH_EARLY if high is not None else 0]
+
+        def select(i, x1, x0):
+            C.ccx(x1, V[i], carries[i])
+            C.x(carries[i])
+            C.ccx(x0, carries[i], V[i])
+            C.x(carries[i])
+
         if high is not None:
-            self._high_word(U[chain:], V[chain:], carries[chain], g0, g1, high[1], copies)
+            self._high_word(U[chain:], V[chain:], carries[chain], g0, g1, high[1], copies,
+                            mid=lambda: [select(i, g1, g0) for i in early])
         elif top is None:
             C.ccx(g0, U[-1], g1)
         else:
@@ -266,10 +280,8 @@ class DialogMultiplier:
         c1, c0 = [g1] + list(copies[:k]), [g0] + list(copies[k:2 * k])
         trees = None
         for j, i in enumerate(reversed(range(1, chain))):
-            C.ccx(c1[j % len(c1)], V[i], carries[i])
-            C.x(carries[i])
-            C.ccx(c0[j % len(c0)], carries[i], V[i])
-            C.x(carries[i])
+            if j >= len(early):
+                select(i, c1[j % len(c1)], c0[j % len(c0)])
             if trees is None:
                 trees = [_fan(C, g1, copies[:k]), _fan(C, g0, copies[k:2 * k])]
         if trees is None:
@@ -390,7 +402,7 @@ class DialogMultiplier:
         """Clean wires _high_word borrows: the borrows E_0 .. E_m, g0*z and its copies."""
         return m + 2 + self._high_copies(m)
 
-    def _high_word(self, U, V, cw, g0, g1, z, scratch):
+    def _high_word(self, U, V, cw, g0, g1, z, scratch, mid=None):
         """The chain's top m bits, where U or V is zero (the joint threshold). On entry V holds
         NOT v, cw the carry c into these bits, and g1 is 0. z names the register holding the word
         X = U ^ V: 1 for U, 0 for V, either when X = 0. A subtract takes one borrow
@@ -399,7 +411,8 @@ class DialogMultiplier:
         and one CCX a bit for U, 3 in place of the majority cell's 4. The swap is g0*z, or the
         borrow leaving the top, g1 = g0*z ^ E_m. V's bits are left so that the caller's CX from
         g1, with no NOT, gives X - e, the top borrow's all-ones word back to 0. scratch goes back
-        clean."""
+        clean. mid, if given, is called once g1 is final, while the borrows run back down; it must
+        not touch the word's wires, cw, z or scratch."""
         C, m = self.C, len(U)
         E, zg = scratch[:m + 1], scratch[m + 1]
         zc = [zg] + list(scratch[m + 2:m + 2 + self._high_copies(m)])
@@ -418,6 +431,8 @@ class DialogMultiplier:
             C.ccx(E[i], v, E[i + 1])
         C.cx(zg, g1)
         C.cx(E[m], g1)
+        if mid is not None:
+            mid()
         # The borrows go in before the chain comes down, so neither ripple waits on a CX: with
         # V = X ^ E, the borrowed word, E_(i+1) = E_i AND NOT X_i is E_i AND V_i. The NOT sits
         # between CX from E_i, so in both directions E_i and V_i reach each chain's CCX at the same
@@ -754,17 +769,18 @@ class DialogMultiplier:
         # Under two, V[:L] = V[1:L] + V[:1] as two layers of disjoint swaps (_rotate_left's), with
         # the stripped bit V0 = E cleared on V[L - 1] after the first layer, which leaves it there.
         # The bottom swaps decide when the next tick can start: two takes the first layer's
-        # bottom swap and then the clear; a copy set first takes the next swap up and then the
-        # second layer's bottom swap; the rest fan from a second copy. The strip's copies come
+        # bottom swap and then the clear; copies set first take the next swaps up and then the
+        # second layer's bottom swaps; the rest fan from a fourth copy, whose own swaps are the
+        # middle ones. The strip's copies come
         # from the far end of copies, away from g1's and g0's, so the fan does not wait on them.
         L = self._strip_len(w, top_clear)
         cps = list(reversed(copies))[:self._strip_copies(w, top_clear)]
-        tree = [(two, c) for c in cps[:2]]
+        tree = [(two, c) for c in cps[:4]]
         for h, t in tree:
             C.cx(h, t)
-        if len(cps) > 2:
-            tree += _fan(C, cps[1], cps[2:])
-        ctl = [two] + cps
+        if len(cps) > 4:
+            tree += _fan(C, cps[3], cps[4:])
+        ctl = [two] + cps[:3] + cps[4:] + cps[3:4]
         for p in range(L // 2):
             cswap(C, ctl[p % len(ctl)], [V[p]], [V[L - 1 - p]])
         C.ccx(two, offset, V[L - 1])
