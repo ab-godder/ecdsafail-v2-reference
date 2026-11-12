@@ -1,6 +1,6 @@
 """Euclid tick 0 against tick 0 at a reference commit, on every V at toy widths.
 
-    python3.12 -I -B scripts/tick0_check.py [--ref 98a5409]
+    python3.12 -I -B scripts/tick0_check.py [--ref 4126811]
 
 Tick 0 runs on U = q, E = 0 and a zero cell. For every prime given whose first width is its bit
 length, both blocks run on every V in 0 .. 2^n - 1, and at secp256k1 on 4,096 random V and the
@@ -42,7 +42,7 @@ def run(block, q, n, vs, ops=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ref", default="98a5409")
+    ap.add_argument("--ref", default="4126811")
     ap.add_argument("--repo", default=str(ROOT))
     ap.add_argument("--primes", type=int, nargs="*", default=[13, 31, 61, 127, 251, 509, 1021, 4093, 65521])
     a = ap.parse_args()
