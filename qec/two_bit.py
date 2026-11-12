@@ -544,29 +544,33 @@ class TwoBitMod(Mod):
             C.cx(g0, top)
             C.cx(J, g0)
             C.x(g0)
-        # top ^= c ^ D off J: its carry, and the cancel of the D that pair n - 2 hands it. On J top
-        # becomes 0, read through mid, which holds top's old value there.
-        C.cx(c, D)
-        C.cx(D, top)
+        # D holds the parity of the lines, l_i = c_i ^ o_i over all i. Off J top ^= c, its carry; on
+        # J top = D, read through mid, which holds top's old value there.
+        C.cx(c, top)
         C.cx(mid, D)
+        C.cx(c, D)
         C.ccx(J, D, top)
-        C.cx(mid, D)
         C.cx(c, D)
+        C.cx(mid, D)
         if g0 is not None:
             C.cx(t, mid)
+        # Each pair is a J-swap of u = w_i and v. Off J u then takes c_i ^ o_i, the sum. On J the
+        # swap moves w_i up and v's value down; v's value there is D less the lines above, and u
+        # adds l_i to it, so the value that reaches word[0] is D ^ (all l_i) = 0. The line is
+        # restored to c_i right after the carry CCX and the sum reads c_i after the swap, so one CX
+        # sits between the swap and the next carry CCX, which overwrites that line (round 2's
+        # local3; D5b read l_i after the swap and restored the line after that read).
         for i in reversed(range(n - 1)):
             c, u, v, o = carries[i], word[i], word[i + 1], ops[i]
-            C.ccx(c, u, o)
-            C.cx(o, u)
-            # u and v both take D, or on J their own XOR. Then c still holds x_i, for D.
-            C.cx(v, u)
-            C.cx(D, v)
-            C.cx(u, D)
-            C.ccx(J, D, v)
-            C.cx(u, D)
-            C.cx(v, u)
             C.cx(c, D)
+            C.ccx(c, u, o)
             C.cx(o, c)
+            C.cx(o, u)
+            C.cx(v, u)
+            C.ccx(J, u, v)
+            C.cx(v, u)
+            C.cx(c, u)
+            C.cx(o, u)
         if g0 is None:
             C.free([cin, D, t])
             return None

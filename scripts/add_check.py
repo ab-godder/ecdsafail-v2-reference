@@ -7,7 +7,9 @@ add runs on all (J, a, word) with a < 2^n and word < 2^(n + 2), clean scratch. O
 top two bits zero on J, and everywhere without held_lane) it must give word = 2*word on J and
 word = (word + (a >> 1)) mod 2^(n + 2) off J, with J and a unchanged and every other wire zero.
 Controls, which must fail: the split add with one CCX dropped, for a few CCX, and with its up pass's
-carry-line XORs emitted top down, which reads a line after it is written.
+carry-line XORs emitted top down, which reads a line after it is written. The one-pass add with one
+CCX dropped, with its parity D's last read dropped, and with each line restored only after the sum
+reads it (so the sum takes l_i = c_i ^ o_i where it needs c_i).
 
 The hand-over variant (g0 given) runs every add on all (g0, J, a, word) with g0 = 1 only off J. On
 a B1 lane (g0 = J = 0, word's top two bits zero) the sum's bits n - 1 and n must leave word for the
@@ -106,6 +108,14 @@ def drop_ccx_onto(t, last=False):
     return mutate
 
 
+def drop_cx_onto(t):
+    """Drop the last CX that targets wire t."""
+    def mutate(ops):
+        k = [k for k in range(len(ops) // 4) if ops[4 * k] == CX and ops[4 * k + 2] == t][-1]
+        return ops[:4 * k] + ops[4 * k + 4:]
+    return mutate
+
+
 def drop_ccx(frac):
     def mutate(ops):
         ccx = [k for k in range(len(ops) // 4) if ops[4 * k] == CCX]
@@ -166,6 +176,53 @@ def main():
                 if not hit:
                     print(f"control not caught: top-down lines, n={n} held={held}")
                 del mod._add_then_rotate
+            # The one-pass add: one CCX dropped; the parity D left with one line in it; and the
+            # sum reading line i before its restore (l_i, not c_i), the order the restore-first
+            # down pass exists to avoid.
+            mod.SPLIT_ADD = False
+            for frac in (0.1, 0.5, 0.9):
+                controls += 1
+                hit = run(build(mod, held, drop_ccx(frac)), n, held) > 0
+                caught += hit
+                if not hit:
+                    print(f"control not caught: one-pass drop {frac}, n={n} held={held}")
+            D = 1 + n + (n + 2) + 1
+            controls += 1
+            hit = run(build(mod, held, drop_cx_onto(D)), n, held) > 0
+            caught += hit
+            if not hit:
+                print(f"control not caught: one-pass D read dropped, n={n} held={held}")
+            orig_d = mod._add_or_shift_d
+
+            def late_restore(C, J, a, word, held_lane=True, g0=None):
+                real_cx, real_ccx = C.cx, C.ccx
+                ops_ = a[1:]
+                restore = {(ops_[i], ops_[i - 1]): (ops_[i - 1], word[i]) for i in range(1, n - 1)}
+                state = {"down": False, "held": {}}
+
+                def ccx(x, y, z):
+                    state["down"] |= x == J
+                    real_ccx(x, y, z)
+
+                def cx(x, y):
+                    if state["down"] and (x, y) in restore:
+                        state["held"][restore[(x, y)]] = (x, y)
+                        return
+                    real_cx(x, y)
+                    if (x, y) in state["held"]:
+                        real_cx(*state["held"].pop((x, y)))
+                C.cx, C.ccx = cx, ccx
+                out = orig_d(C, J, a, word, held_lane, g0)
+                del C.cx, C.ccx
+                return out
+            mod._add_or_shift_d = late_restore
+            controls += 1
+            hit = run(build(mod, held), n, held) > 0
+            caught += hit
+            if not hit:
+                print(f"control not caught: one-pass late restore, n={n} held={held}")
+            del mod._add_or_shift_d
+            mod.SPLIT_ADD = True
             for split, copies in ((False, 0), (True, 1), (True, 4)):
                 mod.SPLIT_ADD, mod.SPLIT_COPIES = split, copies
                 bad = run_hand(build_hand(mod, held), n, held)
