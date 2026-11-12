@@ -832,7 +832,7 @@ Since `600e0e2` both adds also make the B1 hand-over in their top, one CCX each:
 
 ### A dial on the split add (`SPLIT_SKIP`)
 
-`SPLIT_SKIP` Bezout ticks of each pass, spread evenly over its T ticks (tick i when floor(i·k/T) steps), keep the one-pass add; each is its own recorded tick, so the definitions stay the same over addends. Each skipped tick runs twice, in M and its inverse. The tree's default is 0. The toy rows pass at skips 1, 3 and all.
+`SPLIT_SKIP` Bezout ticks of each pass, spread evenly over its T ticks (tick i when floor(i·k/T) steps), keep the one-pass add; each is its own recorded tick, so the definitions stay the same over addends. Each skipped tick runs twice, in M and its inverse. It is 300 on this branch; the branch `bal-both` has it at 0. The toy rows pass at skips 1, 3 and all.
 At G on `75f8c47`, after the post-emit passes, both points have 1,268 wires:
 
 | `SPLIT_SKIP` | CCX | T | scheduled ticks | qubit-time |

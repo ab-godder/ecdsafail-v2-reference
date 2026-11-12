@@ -179,7 +179,7 @@ class TwoBitMod(Mod):
     SPLIT_ADD = True
     SPLIT_COPIES = 4
     # With SPLIT_ADD, this many Bezout ticks of each pass, spread evenly, keep the one-pass add.
-    SPLIT_SKIP = 0
+    SPLIT_SKIP = 300
     # The longest block of the tick's high-word Prefix P, or None for doubling blocks.
     P_CAP = 37
 
