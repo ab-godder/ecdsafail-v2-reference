@@ -208,13 +208,16 @@ class DialogMultiplier:
         for wire in V:
             C.x(wire)
         chain = len(U) if top is None else len(U) - 1
-        for i in range(chain):
-            if i == 0:
-                C.cx(U[i], V[i])
-                C.cx(U[i], carries[i])
-                C.cx(V[i], U[i])
-            else:
-                _maj(C, carries[i], V[i], U[i])
+        # The majority chain, with each bit's two CX first: they read U[i] before the chain writes
+        # it and only XOR into wires the chain also only XORs into, so the CCX ripple runs alone.
+        C.cx(U[0], V[0])
+        C.cx(U[0], carries[0])
+        for i in range(1, chain):
+            C.cx(U[i], V[i])
+            C.cx(U[i], carries[i])
+        C.cx(V[0], U[0])
+        for i in range(1, chain):
+            C.ccx(carries[i], V[i], U[i])
         if top is None:
             C.ccx(g0, U[-1], g1)
         else:
@@ -234,8 +237,12 @@ class DialogMultiplier:
             C.x(carries[i])
             C.ccx(c0[j % len(c0)], carries[i], V[i])
             C.x(carries[i])
+        # The unwind, each bit's CX after the whole ripple: CX(U[i], carries[i]) only XORs into a
+        # wire the next lower CCX also only XORs into, and comes after the CCX that reads it. Run
+        # backward, as the inverse pass runs it, the CX then go first and the ripple runs alone.
         for i in reversed(range(1, chain)):
             C.ccx(carries[i], V[i], U[i])
+        for i in reversed(range(1, chain)):
             C.cx(U[i], carries[i])
         # Bit 0 as before: c ^= a; v ^= a; v ^= c with the empty X pair gone is v ^= c; c ^= a.
         C.cx(V[0], U[0])
