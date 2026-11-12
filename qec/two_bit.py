@@ -44,10 +44,22 @@ class Prefix:
         (self.first,) = C.alloc(1)
         C.ccx(bits[0], bits[1], self.first)
         tops, start = [self.first], 2
+        # Each block's chain takes the carriers the blocks below are done with first, by a rough
+        # count of CCX steps (free[w] is the step after which w is unused), so the blocks' chains
+        # run side by side instead of each one two steps behind the block below on the same wires.
+        free = {bits[0]: 1, bits[1]: 1, self.first: 1}
         while start < h:
             carriers = bits[:start] + tops[:-1]
             m = min(len(carriers) + 1, h - start, cap or h)
-            x, u = bits[start:start + m], carriers[:m - 1]
+            x = bits[start:start + m]
+            order = sorted(range(len(carriers)), key=lambda k: (free.get(carriers[k], 0), k))
+            u = [carriers[k] for k in order[:m - 1]]
+            t0 = max([0] + [free.get(w, 0) - i for i, w in enumerate(u, 1)])
+            for i, w in enumerate(u, 1):
+                free[w] = t0 + i + 2
+            for i, w in enumerate(x):
+                free[w] = max(free.get(w, 0), t0 + max(i, 1) + 1)
+            free[tops[-1]] = max(free.get(tops[-1], 0), t0 + m + 1)
             for w in u:
                 C.x(w)
             v = x[0]
@@ -56,6 +68,7 @@ class Prefix:
                 v = u[i - 1]
             (p,) = C.alloc(1)
             C.ccx(tops[-1], v, p)
+            free[p] = t0 + m + 1
             self.blocks.append((tops[-1], p, x, u, v))
             tops.append(p)
             start += m
