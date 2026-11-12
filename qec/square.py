@@ -15,6 +15,10 @@ from .arith import _carries, _uncarry, add, add_const, gt_into, sub
 from .builder import Circuit
 from .two_bit import Prefix
 
+# The longest block of the square's Prefixes. Shorter blocks take ticks off each write for a few
+# more top wires, which fit under the multiplier's peak.
+PREFIX_CAP = 37
+
 
 def _lend(C, wires, fn):
     """Run fn with wires, which hold 0, handed out by C's allocator before any other. fn returns
@@ -229,7 +233,7 @@ class SquareFold:
         top, t = C.alloc(2)
         add(C, a, b, top, ctrl)
         cs = _carries(C, b[:w + 1], f)
-        carry = Prefix(C, b[w:])
+        carry = Prefix(C, b[w:], cap=PREFIX_CAP)
         # s's top bit and the carry into it are never both 1, so their XOR is the flag.
         C.ccx(cs[w], carry.top, top)
         C.ccx(top, cs[w], t)
@@ -363,7 +367,7 @@ def _replayed(C, build, use):
 def _and_top(C, bits):
     """Prefix's top, AND(bits), built on about log2(len(bits)) fresh wires and bits themselves.
     Returns (top, wires to free once the build is replayed backwards)."""
-    p = Prefix(C, bits)
+    p = Prefix(C, bits, cap=PREFIX_CAP)
     own = [] if len(bits) < 2 else [p.first] + [blk[1] for blk in p.blocks]
     return p.top, own
 
@@ -462,7 +466,7 @@ class HalfSquares:
             return
         t = J.pop(0)
         add(C, a, b[:k], cout=t)
-        carry = Prefix(C, high)
+        carry = Prefix(C, high, cap=PREFIX_CAP)
         C.ccx(t, carry.top, cout)
         carry.write(t)
 
@@ -553,7 +557,7 @@ class HalfSquares:
         sub(C, RB[h:], RB[:h], borrow=b)
         for w in RB[h:]:
             C.x(w)
-        Prefix(C, RB[h:]).write(b)
+        Prefix(C, RB[h:], cap=PREFIX_CAP).write(b)
         for w in RB[h:]:
             C.x(w)
         for w in RB:
