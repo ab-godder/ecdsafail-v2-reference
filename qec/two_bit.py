@@ -387,13 +387,15 @@ class TwoBitMod(Mod):
             self._mark_b1(C, prev, p)
             C.free([p])
 
-    def _add_or_shift(self, C, J, a, word, held_lane=True, split=None):
+    def _add_or_shift(self, C, J, a, word, held_lane=True, split=None, g0=None):
+        """With g0, a B1 lane's sum bits n - 1 and n leave the word for two clean wires, returned
+        as (hn, hb) and 0 on every other lane (Joel's 5f16404). A B1 lane, g0 = J = 0, is never
+        held, so its word[n] is 0 on entry."""
         if self.SPLIT_ADD if split is None else split:
-            self._add_then_rotate(C, J, a, word, held_lane)
-        else:
-            self._add_or_shift_d(C, J, a, word, held_lane)
+            return self._add_then_rotate(C, J, a, word, held_lane, g0)
+        return self._add_or_shift_d(C, J, a, word, held_lane, g0)
 
-    def _add_then_rotate(self, C, J, a, word, held_lane=True):
+    def _add_then_rotate(self, C, J, a, word, held_lane=True, g0=None):
         """The same map as _add_or_shift_d: off J an add of a >> 1 on its own, on J a rotation.
 
         The add is the ripple add with each sum bit made conditional in the up pass, while its carry
@@ -446,9 +448,25 @@ class TwoBitMod(Mod):
             C.ccx(t, mid, hi)
         C.cx(t, mid)
         C.cx(carry, top)
-        C.x(top)
-        C.ccx(carry, top, t)
-        C.x(top)
+        if g0 is None:
+            C.x(top)
+            C.ccx(carry, top, t)
+            C.x(top)
+        else:
+            # J's wire holds NOT J, so g0 ^ NOT J is B1. hn = B1*top takes the final bit n - 1, and
+            # with top cleared there, t's clear reads NOT top ^ B1, which is 0 on B1: t keeps the
+            # carry into bit n, which is bit n itself, and mid gives it back.
+            (hn,) = C.alloc(1)
+            C.cx(J, g0)
+            C.ccx(g0, top, hn)
+            C.cx(hn, top)
+            C.x(top)
+            C.cx(g0, top)
+            C.ccx(carry, top, t)
+            C.cx(g0, top)
+            C.x(top)
+            C.cx(J, g0)
+            C.cx(t, mid)
         C.ccx(J, ops[-1], carry)
         # On J, word[0..n] rotates left: layer one reverses all n + 1 bits, pairs (j, n - j), and
         # layer two all but word[0], pairs (j + 1, n - j). Each swap goes out once both its bits are
@@ -490,9 +508,13 @@ class TwoBitMod(Mod):
         for s, c in reversed(tree):
             C.cx(s, c)
         C.free(copies)
-        C.free([cin, carry, t])
+        if g0 is None:
+            C.free([cin, carry, t])
+            return None
+        C.free([cin, carry])
+        return hn, t
 
-    def _add_or_shift_d(self, C, J, a, word, held_lane=True):
+    def _add_or_shift_d(self, C, J, a, word, held_lane=True, g0=None):
         """On J, word = 2*word. Off J, word += a >> 1, through word's top two bits.
 
         word[n] must be 0 on J: a J cell never follows a B1 (D1), so a J lane is never held.
@@ -515,7 +537,24 @@ class TwoBitMod(Mod):
         C.ccx(J, top, mid)
         C.cx(t, top)
         C.cx(t, mid)
-        C.ccx(c, top, t)
+        if g0 is None:
+            C.ccx(c, top, t)
+        else:
+            # hn = B1*(top ^ c), with B1 = 1 ^ g0 ^ J on the g0 wire, and top ^= hn leaves c there.
+            # t's clear then reads top ^ B1: c*top off B1, and c*(c ^ 1) = 0 on B1, where t keeps
+            # the carry c*top, bit n.
+            (hn,) = C.alloc(1)
+            C.x(g0)
+            C.cx(J, g0)
+            C.cx(c, top)
+            C.ccx(g0, top, hn)
+            C.cx(c, top)
+            C.cx(hn, top)
+            C.cx(g0, top)
+            C.ccx(c, top, t)
+            C.cx(g0, top)
+            C.cx(J, g0)
+            C.x(g0)
         # top ^= c ^ D off J: its carry, and the cancel of the D that pair n - 2 hands it. On J top
         # becomes 0, read through mid, which holds top's old value there.
         C.cx(c, D)
@@ -524,6 +563,8 @@ class TwoBitMod(Mod):
         C.ccx(J, D, top)
         C.cx(mid, D)
         C.cx(c, D)
+        if g0 is not None:
+            C.cx(t, mid)
         for i in reversed(range(n - 1)):
             c, u, v, o = carries[i], word[i], word[i + 1], ops[i]
             C.ccx(c, u, o)
@@ -537,7 +578,11 @@ class TwoBitMod(Mod):
             C.cx(v, u)
             C.cx(c, D)
             C.cx(o, c)
-        C.free([cin, D, t])
+        if g0 is None:
+            C.free([cin, D, t])
+            return None
+        C.free([cin, D])
+        return hn, t
 
     def _sweep_in(self, C, g0, b, sw, up, nxt, tau):
         """The B1 sweep's step into this cell, on an unswept tape read top down.
@@ -639,7 +684,8 @@ class TwoBitMod(Mod):
         if p is not None:
             for x in word:
                 C.cx(p, x)
-        self._add_or_shift(C, b, a, word, held_lane=prev is not None, split=split)
+        ahead = self._add_or_shift(C, b, a, word, held_lane=prev is not None, split=split,
+                                   g0=None if nxt is None else g0)
         if p is not None:
             for x in word:
                 C.cx(p, x)
@@ -656,13 +702,7 @@ class TwoBitMod(Mod):
         else:
             C.cx(g0, one)
             C.cx(b, one)
-            C.x(one)
-            # On a B1, H's bits n and n + 1 move to two fresh wires, the next tick's word top.
-            ahead = C.alloc(2)
-            for k, y in zip((k0, k1), ahead):
-                C.ccx(one, k, y)
-                C.cx(y, k)
-            C.x(one)
+            # On a B1, the add moved H's bits n and n + 1 to ahead, the next tick's word top.
         ra, rb = self.run
         P, M = Prefix(C, H, cap=self.P_CAP), Prefix(C, L[ra:rb])
 

@@ -8,6 +8,11 @@ top two bits zero on J, and everywhere without held_lane) it must give word = 2*
 word = (word + (a >> 1)) mod 2^(n + 2) off J, with J and a unchanged and every other wire zero.
 Controls, which must fail: the split add with one CCX dropped, for a few CCX, and with its up pass's
 carry-line XORs emitted top down, which reads a line after it is written.
+
+The hand-over variant (g0 given) runs every add on all (g0, J, a, word) with g0 = 1 only off J. On
+a B1 lane (g0 = J = 0, word's top two bits zero) the sum's bits n - 1 and n must leave word for the
+returned pair (hn, hb), which is 0 on every other lane; g0 must come back unchanged. Its controls
+drop one CCX of the add top's hand-over, which must fail.
 """
 import argparse
 import sys
@@ -54,6 +59,53 @@ def run(built, n, held):
     return bin(wrong & domain).count("1")
 
 
+def build_hand(mod, held, mutate=None):
+    n = mod.n
+    C = Circuit()
+    (g0, J), a, word = C.alloc(2), C.alloc(n), C.alloc(n + 2)
+    hn, hb = mod._add_or_shift(C, J, a, word, held_lane=held, g0=g0)
+    ops = C.prims
+    if mutate is not None:
+        ops = mutate(ops)
+    return ops, g0, J, a, word, hn, hb, C.num_wires
+
+
+def run_hand(built, n, held):
+    """Lanes of the hand-over variant's domain where some wire is wrong."""
+    ops, g0, J, a, word, hn, hb, num = built
+    wires = [g0, J] + a + word
+    lanes = 1 << (2 * n + 4)
+    state = sim.run(ops, num, sim.pack(range(lanes), wires), lanes)
+    want, domain = {}, 0
+    for v in range(lanes):
+        g, j = v & 1, v >> 1 & 1
+        av, wv = v >> 2 & ((1 << n) - 1), v >> (n + 2)
+        b1 = not g and not j
+        if not (g and j) and not ((j or b1 or not held) and wv >> n):
+            domain |= 1 << v
+        res = 2 * wv if j else (wv + (av >> 1)) % (1 << (n + 2))
+        top = res >> (n - 1) & 3 if b1 else 0
+        res ^= top << (n - 1)
+        for w, bit in zip([g0, J] + a + word + [hn, hb],
+                          [g, j] + [av >> i & 1 for i in range(n)]
+                          + [res >> i & 1 for i in range(n + 2)] + [top & 1, top >> 1]):
+            if bit:
+                want[w] = want.get(w, 0) | 1 << v
+    wrong = 0
+    for w in range(num):
+        wrong |= state[w] ^ want.get(w, 0)
+    return bin(wrong & domain).count("1")
+
+
+def drop_ccx_onto(t, last=False):
+    """Drop the first CCX that targets wire t, or the last with last."""
+    def mutate(ops):
+        hits = [k for k in range(len(ops) // 4) if ops[4 * k] == CCX and ops[4 * k + 3] == t]
+        k = hits[-1 if last else 0]
+        return ops[:4 * k] + ops[4 * k + 4:]
+    return mutate
+
+
 def drop_ccx(frac):
     def mutate(ops):
         ccx = [k for k in range(len(ops) // 4) if ops[4 * k] == CCX]
@@ -88,7 +140,7 @@ def main():
             # Top-down carry-line XORs: each c ^= a then reads a line the one above already wrote.
             orig = mod._add_then_rotate
 
-            def top_down(C, J, a, word, held_lane=True):
+            def top_down(C, J, a, word, held_lane=True, g0=None):
                 real_cx = C.cx
                 ops_ = a[1:]
                 lines = set(zip(ops_, [None] + ops_[:-1]))
@@ -103,8 +155,9 @@ def main():
                         return
                     real_cx(c, t)
                 C.cx = cx
-                orig(C, J, a, word, held_lane)
+                out = orig(C, J, a, word, held_lane, g0)
                 del C.cx
+                return out
             if n >= 4:
                 mod._add_then_rotate = top_down
                 controls += 1
@@ -113,6 +166,24 @@ def main():
                 if not hit:
                     print(f"control not caught: top-down lines, n={n} held={held}")
                 del mod._add_then_rotate
+            for split, copies in ((False, 0), (True, 1), (True, 4)):
+                mod.SPLIT_ADD, mod.SPLIT_COPIES = split, copies
+                bad = run_hand(build_hand(mod, held), n, held)
+                cases += 1
+                failed += bad > 0
+                if bad:
+                    print(f"FAIL hand n={n} held={held} split={split} copies={copies}: {bad} lanes")
+                # The hand-over's two CCX on its wires: the one that writes hn, and t's clear.
+                plain = sum(op == CCX for op in build(mod, held)[0][::4])
+                ops, *_, hn, hb, _ = build_hand(mod, held)
+                assert sum(op == CCX for op in ops[::4]) == plain + 1
+                for mutate in (drop_ccx_onto(hn), drop_ccx_onto(hb, last=True)):
+                    controls += 1
+                    hit = run_hand(build_hand(mod, held, mutate), n, held) > 0
+                    caught += hit
+                    if not hit:
+                        print(f"control not caught: hand split={split}, n={n} held={held}")
+            mod.SPLIT_ADD, mod.SPLIT_COPIES = True, 4
     print(f"{cases} cases, {failed} failed; controls caught {caught} of {controls}")
     sys.exit(1 if failed or caught != controls else 0)
 
